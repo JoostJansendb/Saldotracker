@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, Car } from "lucide-react";
 import { motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 
@@ -29,6 +29,101 @@ type AddMoneyFormState = {
   amount: string;
   message: string;
 };
+
+type RideScheduleItem = {
+  date: string;
+  team: string;
+  location: "uit" | "thuis" | "Thuis";
+  kilometers: number | null;
+  riders: string[];
+};
+
+const rideSchedule: RideScheduleItem[] = [
+  {
+    date: "3/1/2026",
+    team: "tilburg H7",
+    location: "uit",
+    kilometers: 34,
+    riders: ["sewi", "bram", "olivier", "hugo"],
+  },
+  {
+    date: "3/8/2026",
+    team: "Don Quishoot H3",
+    location: "uit",
+    kilometers: 37,
+    riders: ["brek", "jonathan", "joost", "max"],
+  },
+  {
+    date: "3/15/2026",
+    team: "Push H3",
+    location: "thuis",
+    kilometers: null,
+    riders: [],
+  },
+  {
+    date: "3/22/2026",
+    team: "Push H4",
+    location: "uit",
+    kilometers: 21,
+    riders: ["pepijn", "sewi", "timon", "tim"],
+  },
+  {
+    date: "3/29/2026",
+    team: "Rosmalen",
+    location: "thuis",
+    kilometers: null,
+    riders: [],
+  },
+  {
+    date: "4/12/2026",
+    team: "Were Di H4",
+    location: "uit",
+    kilometers: 26,
+    riders: ["tijn", "pepijn", "hugo", "pieter"],
+  },
+  {
+    date: "4/19/2026",
+    team: "Drunen",
+    location: "Thuis",
+    kilometers: null,
+    riders: [],
+  },
+  {
+    date: "5/10/2026",
+    team: "Best",
+    location: "Thuis",
+    kilometers: null,
+    riders: [],
+  },
+  {
+    date: "5/17/2026",
+    team: "Geel-Zwart",
+    location: "uit",
+    kilometers: 21,
+    riders: ["tim", "timon", "pieter", "jonathan"],
+  },
+  {
+    date: "5/31/2026",
+    team: "Den Bosch",
+    location: "thuis",
+    kilometers: null,
+    riders: [],
+  },
+  {
+    date: "6/7/2026",
+    team: "Oranje-Rood",
+    location: "uit",
+    kilometers: 43,
+    riders: ["sam", "tom", "bas", "thomas"],
+  },
+  {
+    date: "6/14/2026",
+    team: "tilburg H7",
+    location: "thuis",
+    kilometers: null,
+    riders: [],
+  },
+];
 
 function euro(amount: number) {
   return new Intl.NumberFormat("nl-NL", {
@@ -53,6 +148,7 @@ export default function SaldoTrackerApp() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema">("saldo");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({
     selectedUserIds: [],
     amount: "",
@@ -62,6 +158,17 @@ export default function SaldoTrackerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const userModalRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshUsers = async () => {
+    const { data, error } = await supabase.from("users").select("*");
+
+    if (error) {
+      console.error("Fout bij verversen users:", error);
+      return;
+    }
+
+    if (data) setUsers(data);
+  };
   
   useEffect(() => {
     function handleClickOutsideModal(event: MouseEvent) {
@@ -102,24 +209,23 @@ export default function SaldoTrackerApp() {
   }, [isProfileMenuOpen]);
 
   useEffect(() => {
-    const fetchUsers = async () => {
-      const { data, error } = await supabase.from("users").select("*");
+      refreshUsers();
+    }, []);
 
-      console.log("SUPABASE users:", data);
-      console.log("SUPABASE error:", error);
-
-      if (error) {
-        console.error("Fout bij ophalen users:", error);
-        return;
-      }
-
-      if (data) {
-        setUsers(data);
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshUsers();
       }
     };
 
-    fetchUsers();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
+
 
   const sortedUsers = useMemo(() => {
     return [...users]
@@ -151,11 +257,6 @@ useEffect(() => {
     localStorage.setItem("currentUser", JSON.stringify(currentUser));
   }
 }, [currentUser]);
-
-  const refreshUsers = async () => {
-    const { data } = await supabase.from("users").select("*");
-    if (data) setUsers(data);
-  };  
 
 const login = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -381,8 +482,8 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-3 sm:p-4 md:p-8">
-      <div className="mx-auto max-w-5xl space-y-4 md:space-y-6">
+    <div className="min-h-screen bg-slate-50 p-3 pb-24 sm:p-4 md:p-8">
+      <div className="mx-auto max-w-5xl space-y-4 pb-24 md:space-y-6">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -480,207 +581,279 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
             </CardContent>
           </Card>
         </motion.div>
+        {activeMainTab === "saldo" ? (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.05 }}
+          >
+            <Card className="rounded-3xl border-0 shadow-sm">
+              <Tabs defaultValue="overzicht" className="w-full">
+                <CardHeader className="pb-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <CardTitle className="text-xl">Saldo</CardTitle>
+                      <p className="mt-1 text-sm text-slate-500">
+                        Gesorteerd van hoog naar laag.
+                      </p>
+                    </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, delay: 0.05 }}
-        >
-          <Card className="rounded-3xl border-0 shadow-sm">
-            <Tabs defaultValue="overzicht" className="w-full">
-              <CardHeader className="pb-3">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <CardTitle className="text-xl">Saldo</CardTitle>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Gesorteerd van hoog naar laag.
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col gap-3 sm:items-end">
-                    {currentUser.role === "admin" ? (
-                      <Badge variant="secondary" className="w-fit rounded-full px-3 py-1">
-                        <ShieldCheck className="mr-1 h-4 w-4" />
-                        Admin kan saldo&apos;s aanpassen
-                      </Badge>
-                    ) : null}
-
-                    <TabsList className={`grid rounded-2xl ${currentUser.role === "admin" ? "grid-cols-2" : "grid-cols-1"} w-full sm:w-[280px]`}>
-                      <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
+                    <div className="flex flex-col gap-3 sm:items-end">
                       {currentUser.role === "admin" ? (
-                        <TabsTrigger value="toevoegen">Saldo aanpassen</TabsTrigger>
+                        <Badge variant="secondary" className="w-fit rounded-full px-3 py-1">
+                          <ShieldCheck className="mr-1 h-4 w-4" />
+                          Admin kan saldo&apos;s aanpassen
+                        </Badge>
                       ) : null}
-                    </TabsList>
-                  </div>
-                </div>
-              </CardHeader>
 
-              <CardContent>
-                <TabsContent value="overzicht" className="mt-0">
-                  <div className="overflow-hidden rounded-2xl border bg-white">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Profiel</TableHead>
-                          <TableHead>Naam</TableHead>
-                          <TableHead className="text-right">Saldo</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {sortedUsers.map((user) => (
-                          <TableRow key={user.id}>
-                            <TableCell>
-                              <button
-                                type="button"
-                                onClick={() => setSelectedUser(user)}
-                                className="rounded-full"
-                              >
-                                <Avatar className="h-11 w-11 cursor-pointer transition hover:scale-105">
-                                  {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
-                                  <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
-                                </Avatar>
-                              </button>
-                            </TableCell>
-                            <TableCell className="font-medium">{user.name}</TableCell>
-                            <TableCell className="text-right font-semibold">
-                              <span className={user.balance >= 0 ? "text-slate-900" : "text-red-600"}>
-                                {euro(user.balance)}
-                              </span>
-                            </TableCell>
+                      <TabsList className={`grid rounded-2xl ${currentUser.role === "admin" ? "grid-cols-2" : "grid-cols-1"} w-full sm:w-[280px]`}>
+                        <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
+                        {currentUser.role === "admin" ? (
+                          <TabsTrigger value="toevoegen">Saldo aanpassen</TabsTrigger>
+                        ) : null}
+                      </TabsList>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <CardContent>
+                  <TabsContent value="overzicht" className="mt-0">
+                    <div className="overflow-hidden rounded-2xl border bg-white">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Profiel</TableHead>
+                            <TableHead>Naam</TableHead>
+                            <TableHead className="text-right">Saldo</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </TabsContent>
+                        </TableHeader>
+                        <TableBody>
+                          {sortedUsers.map((user) => (
+                            <TableRow key={user.id}>
+                              <TableCell>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedUser(user)}
+                                  className="rounded-full"
+                                >
+                                  <Avatar className="h-11 w-11 cursor-pointer transition hover:scale-105">
+                                    {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
+                                    <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
+                                  </Avatar>
+                                </button>
+                              </TableCell>
+                              <TableCell className="font-medium">{user.name}</TableCell>
+                              <TableCell className="text-right font-semibold">
+                                <span className={user.balance >= 0 ? "text-slate-900" : "text-red-600"}>
+                                  {euro(user.balance)}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </TabsContent>
 
-                {currentUser.role === "admin" ? (
-                  <TabsContent value="toevoegen" className="mt-0">
-                    <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                      <Card className="rounded-2xl border shadow-none">
-                        <CardContent className="p-5">
-                          <div className="space-y-2">
-                            <h3 className="text-lg font-semibold">Saldo aanpassen</h3>
-                            <p className="text-sm text-slate-500">
-                              Selecteer 1 of meerdere gebruikers en voeg in één keer hetzelfde bedrag toe.
-                            </p>
-                          </div>
-
-                          <div className="mt-5 space-y-4">
+                  {currentUser.role === "admin" ? (
+                    <TabsContent value="toevoegen" className="mt-0">
+                      <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+                        <Card className="rounded-2xl border shadow-none">
+                          <CardContent className="p-5">
                             <div className="space-y-2">
-                              <Label>Gebruikers selecteren</Label>
-                              <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border p-3">
-                                {sortedUsers.map((user) => {
-                                  const selected = addMoneyForm.selectedUserIds.includes(user.id);
+                              <h3 className="text-lg font-semibold">Saldo aanpassen</h3>
+                              <p className="text-sm text-slate-500">
+                                Selecteer 1 of meerdere gebruikers en voeg in één keer hetzelfde bedrag toe.
+                              </p>
+                            </div>
 
-                                  return (
-                                    <button
+                            <div className="mt-5 space-y-4">
+                              <div className="space-y-2">
+                                <Label>Gebruikers selecteren</Label>
+                                <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border p-3">
+                                  {sortedUsers.map((user) => {
+                                    const selected = addMoneyForm.selectedUserIds.includes(user.id);
+
+                                    return (
+                                      <button
+                                        key={user.id}
+                                        type="button"
+                                        onClick={() => toggleSelectedUser(user.id)}
+                                        className={`flex w-full items-center justify-between rounded-2xl border px-3 py-3 text-left transition ${
+                                          selected
+                                            ? "border-slate-900 bg-slate-900 text-white"
+                                            : "border-slate-200 bg-white hover:bg-slate-50"
+                                        }`}
+                                      >
+                                        <div className="flex items-center gap-3">
+                                          <Avatar className="h-10 w-10">
+                                            {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
+                                            <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
+                                          </Avatar>
+                                          <div>
+                                            <p className="font-medium">{user.name}</p>
+                                            <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>
+                                              Huidig saldo: {euro(user.balance)}
+                                            </p>
+                                          </div>
+                                        </div>
+
+                                        <div
+                                          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                            selected
+                                              ? "bg-white text-slate-900"
+                                              : "bg-slate-100 text-slate-600"
+                                          }`}
+                                        >
+                                          {selected ? "Geselecteerd" : "Selecteer"}
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label htmlFor="amount">Bedrag</Label>
+                                <Input
+                                  id="amount"
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={addMoneyForm.amount}
+                                  onChange={(e) =>
+                                    setAddMoneyForm((prev) => ({
+                                      ...prev,
+                                      amount: e.target.value,
+                                      message: "",
+                                    }))
+                                  }
+                                  placeholder="Bijv. 10,50"
+                                  className="h-12 rounded-2xl"
+                                />
+                              </div>
+
+                              <Button onClick={addMoneyToSelectedUsers} className="h-12 rounded-2xl">
+                                <PlusCircle className="mr-2 h-4 w-4" />
+                                Toevoegen
+                              </Button>
+
+                              {addMoneyForm.message ? (
+                                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                                  {addMoneyForm.message}
+                                </div>
+                              ) : null}
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        <Card className="rounded-2xl border shadow-none">
+                          <CardContent className="p-5">
+                            <h3 className="text-lg font-semibold">Geselecteerde gebruikers</h3>
+                            <div className="mt-4 space-y-2">
+                              {addMoneyForm.selectedUserIds.length === 0 ? (
+                                <p className="text-sm text-slate-500">Nog niemand geselecteerd.</p>
+                              ) : (
+                                sortedUsers
+                                  .filter((user) => addMoneyForm.selectedUserIds.includes(user.id))
+                                  .map((user) => (
+                                    <div
                                       key={user.id}
-                                      type="button"
-                                      onClick={() => toggleSelectedUser(user.id)}
-                                      className={`flex w-full items-center justify-between rounded-2xl border px-3 py-3 text-left transition ${
-                                        selected
-                                          ? "border-slate-900 bg-slate-900 text-white"
-                                          : "border-slate-200 bg-white hover:bg-slate-50"
-                                      }`}
+                                      className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-3"
                                     >
                                       <div className="flex items-center gap-3">
-                                        <Avatar className="h-10 w-10">
+                                        <Avatar className="h-9 w-9">
                                           {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
                                           <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
                                         </Avatar>
-                                        <div>
-                                          <p className="font-medium">{user.name}</p>
-                                          <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>
-                                            Huidig saldo: {euro(user.balance)}
-                                          </p>
-                                        </div>
+                                        <span className="font-medium">{user.name}</span>
                                       </div>
-
-                                      <div
-                                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                          selected
-                                            ? "bg-white text-slate-900"
-                                            : "bg-slate-100 text-slate-600"
-                                        }`}
-                                      >
-                                        {selected ? "Geselecteerd" : "Selecteer"}
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label htmlFor="amount">Bedrag</Label>
-                              <Input
-                                id="amount"
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={addMoneyForm.amount}
-                                onChange={(e) =>
-                                  setAddMoneyForm((prev) => ({
-                                    ...prev,
-                                    amount: e.target.value,
-                                    message: "",
-                                  }))
-                                }
-                                placeholder="Bijv. 10,50"
-                                className="h-12 rounded-2xl"
-                              />
-                            </div>
-
-                            <Button onClick={addMoneyToSelectedUsers} className="h-12 rounded-2xl">
-                              <PlusCircle className="mr-2 h-4 w-4" />
-                              Toevoegen
-                            </Button>
-
-                            {addMoneyForm.message ? (
-                              <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                                {addMoneyForm.message}
-                              </div>
-                            ) : null}
-                          </div>
-                        </CardContent>
-                      </Card>
-
-                      <Card className="rounded-2xl border shadow-none">
-                        <CardContent className="p-5">
-                          <h3 className="text-lg font-semibold">Geselecteerde gebruikers</h3>
-                          <div className="mt-4 space-y-2">
-                            {addMoneyForm.selectedUserIds.length === 0 ? (
-                              <p className="text-sm text-slate-500">Nog niemand geselecteerd.</p>
-                            ) : (
-                              sortedUsers
-                                .filter((user) => addMoneyForm.selectedUserIds.includes(user.id))
-                                .map((user) => (
-                                  <div
-                                    key={user.id}
-                                    className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-3"
-                                  >
-                                    <div className="flex items-center gap-3">
-                                      <Avatar className="h-9 w-9">
-                                        {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
-                                        <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
-                                      </Avatar>
-                                      <span className="font-medium">{user.name}</span>
+                                      <span className="text-sm text-slate-500">{euro(user.balance)}</span>
                                     </div>
-                                    <span className="text-sm text-slate-500">{euro(user.balance)}</span>
-                                  </div>
-                                ))
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </div>
-                  </TabsContent>
-                ) : null}
+                                  ))
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </TabsContent>
+                  ) : null}
+                </CardContent>
+              </Tabs>
+            </Card>
+          </motion.div>
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.05 }}
+          >
+            <Card className="rounded-3xl border-0 shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-xl">Rijschema</CardTitle>
+                <p className="mt-1 text-sm text-slate-500">
+                  Overzicht van uit- en thuiswedstrijden met kilometers en rijders.
+                </p>
+              </CardHeader>
+
+              <CardContent>
+                <div className="overflow-hidden rounded-2xl border bg-white">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Datum</TableHead>
+                        <TableHead>Team</TableHead>
+                        <TableHead>Uit/thuis</TableHead>
+                        <TableHead>Kilometers</TableHead>
+                        <TableHead>Rijders</TableHead>
+                      </TableRow>
+                    </TableHeader>
+
+                    <TableBody>
+                      {rideSchedule.map((match) => {
+                        const isAway = match.location.toLowerCase() === "uit";
+
+                        return (
+                          <TableRow
+                            key={`${match.date}-${match.team}-${match.location}`}
+                            className={isAway ? "bg-gray-100" : "bg-white"}
+                          >
+                            <TableCell className="font-medium text-black">
+                              {match.date}
+                            </TableCell>
+                            <TableCell className="text-black">{match.team || "-"}</TableCell>
+                            <TableCell className="capitalize text-black">
+                              {match.location}
+                            </TableCell>
+                            <TableCell className="text-black">
+                              {match.kilometers ?? "-"}
+                            </TableCell>
+                            <TableCell className="text-black">
+                              {match.riders.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {match.riders.map((rider) => (
+                                    <span
+                                      key={rider}
+                                      className="rounded-full bg-white/70 px-2 py-1 text-xs font-medium text-slate-900"
+                                    >
+                                      {rider}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                "-"
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
               </CardContent>
-            </Tabs>
-          </Card>
-        </motion.div>
+            </Card>
+          </motion.div>
+        )}
       </div>
       {selectedUser ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -718,11 +891,39 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
           </div>
         </div>
       ) : null}
-      <div className="flex justify-center pt-4 pb-6">
-        <Button onClick={refreshUsers} className="rounded-2xl">
-          <RefreshCw className="mr-2 h-4 w-4" />
-          Verversen
-        </Button>
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur">
+          <div className="mx-auto grid max-w-md grid-cols-2 gap-2 px-3 py-2">
+          <button
+            type="button"
+            onClick={() => setActiveMainTab("saldo")}
+            className={`rounded-2xl py-2 transition ${
+              activeMainTab === "saldo"
+                ? "bg-slate-900 text-white"
+                : "bg-slate-100 text-slate-700"
+            }`}
+          >
+            <div className="flex flex-col items-center justify-center text-xs">
+              <Wallet className="h-5 w-5 mb-1" />
+              Saldo
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveMainTab("rijschema")}
+            className={`rounded-2xl py-2 transition ${
+              activeMainTab === "rijschema"
+                ? "bg-slate-900 text-white"
+                : "bg-slate-100 text-slate-700"
+            }`}
+          >
+            <div className="flex flex-col items-center justify-center text-xs">
+              <Car className="h-5 w-5 mb-1" />
+              Rijschema
+            </div>
+          </button>
+
+        </div>
       </div>
     </div>
   );
