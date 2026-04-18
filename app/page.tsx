@@ -40,84 +40,84 @@ type RideScheduleItem = {
 
 const rideSchedule: RideScheduleItem[] = [
   {
-    date: "3/1/2026",
+    date: "1/3/2026",
     team: "tilburg H7",
     location: "uit",
     kilometers: 34,
     riders: ["sewi", "bram", "olivier", "hugo"],
   },
   {
-    date: "3/8/2026",
+    date: "8/3/2026",
     team: "Don Quishoot H3",
     location: "uit",
     kilometers: 37,
     riders: ["brek", "jonathan", "joost", "max"],
   },
   {
-    date: "3/15/2026",
+    date: "15/3/2026",
     team: "Push H3",
     location: "thuis",
     kilometers: null,
     riders: [],
   },
   {
-    date: "3/22/2026",
+    date: "22/3/2026",
     team: "Push H4",
     location: "uit",
     kilometers: 21,
     riders: ["pepijn", "sewi", "timon", "tim"],
   },
   {
-    date: "3/29/2026",
+    date: "29/3/2026",
     team: "Rosmalen",
     location: "thuis",
     kilometers: null,
     riders: [],
   },
   {
-    date: "4/12/2026",
+    date: "12/4/2026",
     team: "Were Di H4",
     location: "uit",
     kilometers: 26,
     riders: ["tijn", "pepijn", "hugo", "pieter"],
   },
   {
-    date: "4/19/2026",
+    date: "19/4/2026",
     team: "Drunen",
     location: "Thuis",
     kilometers: null,
     riders: [],
   },
   {
-    date: "5/10/2026",
+    date: "10/5/2026",
     team: "Best",
     location: "Thuis",
     kilometers: null,
     riders: [],
   },
   {
-    date: "5/17/2026",
+    date: "17/5/2026",
     team: "Geel-Zwart",
     location: "uit",
     kilometers: 21,
     riders: ["tim", "timon", "pieter", "jonathan"],
   },
   {
-    date: "5/31/2026",
+    date: "31/5/2026",
     team: "Den Bosch",
     location: "thuis",
     kilometers: null,
     riders: [],
   },
   {
-    date: "6/7/2026",
+    date: "7/6/2026",
     team: "Oranje-Rood",
     location: "uit",
     kilometers: 43,
     riders: ["sam", "tom", "bas", "thomas"],
   },
   {
-    date: "6/14/2026",
+    date: "14/6/2026",
     team: "tilburg H7",
     location: "thuis",
     kilometers: null,
@@ -213,15 +213,23 @@ export default function SaldoTrackerApp() {
     }, []);
 
   useEffect(() => {
+    const handleAppVisible = () => {
+      refreshUsers();
+    };
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         refreshUsers();
       }
     };
 
+    window.addEventListener("focus", handleAppVisible);
+    window.addEventListener("pageshow", handleAppVisible);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      window.removeEventListener("focus", handleAppVisible);
+      window.removeEventListener("pageshow", handleAppVisible);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
@@ -883,7 +891,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
         </div>
       ) : null}
         <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-          <div className="mx-auto flex max-w-md justify-around py-2">
+          <div className="mx-auto flex max-w-md justify-around py-3">
 
             <button
               onClick={() => setActiveMainTab("saldo")}
