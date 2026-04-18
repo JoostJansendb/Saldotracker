@@ -47,6 +47,7 @@ function getInitials(name: string) {
 
 export default function SaldoTrackerApp() {
   const [users, setUsers] = useState<User[]>([]);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -59,7 +60,27 @@ export default function SaldoTrackerApp() {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const userModalRef = useRef<HTMLDivElement | null>(null);
   
+  useEffect(() => {
+    function handleClickOutsideModal(event: MouseEvent) {
+      if (
+        userModalRef.current &&
+        !userModalRef.current.contains(event.target as Node)
+      ) {
+        setSelectedUser(null);
+      }
+    }
+
+    if (selectedUser) {
+      document.addEventListener("mousedown", handleClickOutsideModal);
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutsideModal);
+    };
+  }, [selectedUser]);
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
@@ -105,6 +126,31 @@ export default function SaldoTrackerApp() {
       .sort((a, b) => b.balance - a.balance);
   }, [users]);
 
+useEffect(() => {
+  const storedUser = localStorage.getItem("currentUser");
+  if (!storedUser || users.length === 0) return;
+
+  const parsedUser = JSON.parse(storedUser);
+
+  if (parsedUser.role === "admin") {
+    setCurrentUser(parsedUser);
+    return;
+  }
+
+  const freshUser = users.find((user) => user.id === parsedUser.id);
+
+  if (freshUser) {
+    setCurrentUser(freshUser);
+    localStorage.setItem("currentUser", JSON.stringify(freshUser));
+  }
+}, [users]);
+
+useEffect(() => {
+  if (currentUser) {
+    localStorage.setItem("currentUser", JSON.stringify(currentUser));
+  }
+}, [currentUser]);
+
   const login = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
@@ -118,6 +164,7 @@ export default function SaldoTrackerApp() {
     }
 
     setCurrentUser(found);
+    localStorage.setItem("currentUser", JSON.stringify(found));
     setError("");
     setUsername("");
     setPassword("");
@@ -125,6 +172,7 @@ export default function SaldoTrackerApp() {
 
   const logout = () => {
     setCurrentUser(null);
+    localStorage.removeItem("currentUser");
   };
 
   const updateCurrentUserAvatar = async (avatar: string) => {
@@ -476,10 +524,16 @@ export default function SaldoTrackerApp() {
                         {sortedUsers.map((user) => (
                           <TableRow key={user.id}>
                             <TableCell>
-                              <Avatar className="h-11 w-11">
-                                {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
-                                <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
-                              </Avatar>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedUser(user)}
+                                className="rounded-full"
+                              >
+                                <Avatar className="h-11 w-11 cursor-pointer transition hover:scale-105">
+                                  {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
+                                  <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
+                                </Avatar>
+                              </button>
                             </TableCell>
                             <TableCell className="font-medium">{user.name}</TableCell>
                             <TableCell className="text-right font-semibold">
@@ -622,6 +676,42 @@ export default function SaldoTrackerApp() {
           </Card>
         </motion.div>
       </div>
+      {selectedUser ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div
+            ref={userModalRef}
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+          >
+            <div className="space-y-5 text-center">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">{selectedUser.name}</h2>
+              </div>
+
+              <div className="flex justify-center">
+                <Avatar className="h-28 w-28 ring-4 ring-slate-100">
+                  {selectedUser.avatar ? (
+                    <AvatarImage src={selectedUser.avatar} alt={selectedUser.name} />
+                  ) : null}
+                  <AvatarFallback className="text-2xl">
+                    {getInitials(selectedUser.name)}
+                  </AvatarFallback>
+                </Avatar>
+              </div>
+
+              <div className="space-y-3 rounded-2xl bg-slate-50 p-4 text-left">
+                <p className="text-base text-slate-700">
+                  <span className="font-semibold text-slate-900">Huidig saldo:</span>{" "}
+                  {euro(selectedUser.balance)}
+                </p>
+                <p className="text-base text-slate-700">
+                  <span className="font-semibold text-slate-900">Totaal uitgegeven:</span>{" "}
+                  €0,00
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
