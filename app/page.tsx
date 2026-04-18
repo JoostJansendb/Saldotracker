@@ -883,34 +883,50 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
         </div>
       ) : null}
         <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-          <div className="mx-auto grid grid-cols-2 gap-4 px-3 py-2 justify-center">
-            
+          <div className="mx-auto flex max-w-md justify-around py-2">
+
             <button
               onClick={() => setActiveMainTab("saldo")}
-              className={`rounded-2xl py-2 transition ${
-                activeMainTab === "saldo"
-                  ? "bg-slate-900 text-white"
-                  : "bg-slate-100 text-slate-700"
-              }`}
+              className="flex flex-col items-center justify-center"
             >
-              <div className="flex flex-col items-center text-xs">
-                <Wallet className="h-5 w-5 mb-1" />
+              <Wallet
+                className={`transition ${
+                  activeMainTab === "saldo"
+                    ? "h-6 w-6 text-slate-900"
+                    : "h-5 w-5 text-slate-400"
+                }`}
+              />
+              <span
+                className={`mt-1 text-xs ${
+                  activeMainTab === "saldo"
+                    ? "text-slate-900 font-medium"
+                    : "text-slate-400"
+                }`}
+              >
                 Saldo
-              </div>
+              </span>
             </button>
 
             <button
               onClick={() => setActiveMainTab("rijschema")}
-              className={`rounded-2xl py-2 transition ${
-                activeMainTab === "rijschema"
-                  ? "bg-slate-900 text-white"
-                  : "bg-slate-100 text-slate-700"
-              }`}
+              className="flex flex-col items-center justify-center"
             >
-              <div className="flex flex-col items-center text-xs">
-                <Car className="h-5 w-5 mb-1" />
+              <Car
+                className={`transition ${
+                  activeMainTab === "rijschema"
+                    ? "h-6 w-6 text-slate-900"
+                    : "h-5 w-5 text-slate-400"
+                }`}
+              />
+              <span
+                className={`mt-1 text-xs ${
+                  activeMainTab === "rijschema"
+                    ? "text-slate-900 font-medium"
+                    : "text-slate-400"
+                }`}
+              >
                 Rijschema
-              </div>
+              </span>
             </button>
 
           </div>
