@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,7 @@ import { LogOut, ShieldCheck, Wallet, PlusCircle } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
-  id: number;
+  id: string;
   username: string;
   password: string;
   name: string;
@@ -23,33 +24,10 @@ type User = {
 };
 
 type AddMoneyFormState = {
-  selectedUserIds: number[];
+  selectedUserIds: string[];
   amount: string;
   message: string;
 };
-
-const initialUsers: User[] = [
-  { id: 1, username: "admin", password: "admin123", name: "Admin", role: "admin", balance: 0, avatar: "" },
-  { id: 2, username: "sewi", password: "team123", name: "Sewi Houben", role: "user", balance: -9.03, avatar: "" },
-  { id: 3, username: "bramv", password: "team123", name: "Bram Van Vugt", role: "user", balance: -23.8, avatar: "" },
-  { id: 4, username: "max", password: "team123", name: "Max Mallant", role: "user", balance: 3.41, avatar: "" },
-  { id: 5, username: "olivier", password: "team123", name: "Olivier Eerden", role: "user", balance: -21.56, avatar: "" },
-  { id: 6, username: "hugo", password: "team123", name: "Hugo van Eck", role: "user", balance: -21.76, avatar: "" },
-  { id: 7, username: "pepijn", password: "team123", name: "Pepijn Ramaekers", role: "user", balance: 137.68, avatar: "" },
-  { id: 8, username: "tommy", password: "team123", name: "Tommy Van der Lee", role: "user", balance: 21.65, avatar: "" },
-  { id: 9, username: "sam", password: "team123", name: "Sam Rek", role: "user", balance: -29.79, avatar: "" },
-  { id: 10, username: "bramr", password: "team123", name: "Bram Rek", role: "user", balance: -17.79, avatar: "" },
-  { id: 11, username: "timon", password: "team123", name: "Timon Ramaekers", role: "user", balance: -104.0, avatar: "" },
-  { id: 12, username: "thomas", password: "team123", name: "Thomas Jurgens", role: "user", balance: 133.6, avatar: "" },
-  { id: 13, username: "tijn", password: "team123", name: "Tijn Damen", role: "user", balance: -87.97, avatar: "" },
-  { id: 14, username: "tim", password: "team123", name: "Tim Rovers", role: "user", balance: -97.66, avatar: "" },
-  { id: 15, username: "bas", password: "team123", name: "Bas Rovers", role: "user", balance: -40.24, avatar: "" },
-  { id: 16, username: "jonathan", password: "team123", name: "Jonathan Eerden", role: "user", balance: -26.45, avatar: "" },
-  { id: 17, username: "joost", password: "welkom123", name: "Joost Jansen", role: "user", balance: -57.49, avatar: "" },
-  { id: 18, username: "pieter", password: "team123", name: "Pieter Barneveld", role: "user", balance: 87.38, avatar: "" },
-  { id: 19, username: "jelle", password: "team123", name: "Jelle Spijkerman", role: "user", balance: -23.46, avatar: "" },
-  { id: 20, username: "dirkjan", password: "team123", name: "Dirk-Jan Udo", role: "user", balance: 0, avatar: "" },
-];
 
 function euro(amount: number) {
   return new Intl.NumberFormat("nl-NL", {
@@ -68,7 +46,7 @@ function getInitials(name: string) {
 }
 
 export default function SaldoTrackerApp() {
-  const [users, setUsers] = useState<User[]>(initialUsers);
+  const [users, setUsers] = useState<User[]>([]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -81,6 +59,7 @@ export default function SaldoTrackerApp() {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
@@ -99,6 +78,26 @@ export default function SaldoTrackerApp() {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [isProfileMenuOpen]);
+
+  useEffect(() => {
+    const fetchUsers = async () => {
+      const { data, error } = await supabase.from("users").select("*");
+
+      console.log("SUPABASE users:", data);
+      console.log("SUPABASE error:", error);
+
+      if (error) {
+        console.error("Fout bij ophalen users:", error);
+        return;
+      }
+
+      if (data) {
+        setUsers(data);
+      }
+    };
+
+    fetchUsers();
+  }, []);
 
   const sortedUsers = useMemo(() => {
     return [...users]
@@ -128,51 +127,71 @@ export default function SaldoTrackerApp() {
     setCurrentUser(null);
   };
 
-  const updateCurrentUserAvatar = (avatar: string) => {
-  if (!currentUser) return;
+  const updateCurrentUserAvatar = async (avatar: string) => {
+    if (!currentUser) return;
 
-  setUsers((prev) =>
-    prev.map((user) =>
-      user.id === currentUser.id ? { ...user, avatar } : user
-    )
-  );
+    const { error } = await supabase
+      .from("users")
+      .update({ avatar })
+      .eq("id", currentUser.id);
 
-  setCurrentUser((prev) => (prev ? { ...prev, avatar } : prev));
-};
-
-const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-
-  reader.onload = () => {
-    const result = reader.result;
-    if (typeof result === "string") {
-      updateCurrentUserAvatar(result);
-      setIsProfileMenuOpen(false);
+    if (error) {
+      console.error("Fout bij opslaan avatar:", error);
+      return;
     }
+
+    setUsers((prev) =>
+      prev.map((user) =>
+        user.id === currentUser.id ? { ...user, avatar } : user
+      )
+    );
+
+    setCurrentUser((prev) => (prev ? { ...prev, avatar } : prev));
   };
 
-  reader.readAsDataURL(file);
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  e.target.value = "";
-};
+    const reader = new FileReader();
 
-const removeAvatar = () => {
-  if (!currentUser) return;
+    reader.onload = async () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        await updateCurrentUserAvatar(result);
+        setIsProfileMenuOpen(false);
+      }
+    };
 
-  setUsers((prev) =>
-    prev.map((user) =>
-      user.id === currentUser.id ? { ...user, avatar: "" } : user
-    )
-  );
+    reader.readAsDataURL(file);
 
-  setCurrentUser((prev) => (prev ? { ...prev, avatar: "" } : prev));
-  setIsProfileMenuOpen(false);
-};
+    e.target.value = "";
+  };
 
-  const toggleSelectedUser = (id: number) => {
+  const removeAvatar = async () => {
+    if (!currentUser) return;
+
+    const { error } = await supabase
+      .from("users")
+      .update({ avatar: "" })
+      .eq("id", currentUser.id);
+
+    if (error) {
+      console.error("Fout bij verwijderen avatar:", error);
+      return;
+    }
+
+    setUsers((prev) =>
+      prev.map((user) =>
+        user.id === currentUser.id ? { ...user, avatar: "" } : user
+      )
+    );
+
+    setCurrentUser((prev) => (prev ? { ...prev, avatar: "" } : prev));
+    setIsProfileMenuOpen(false);
+  };
+
+  const toggleSelectedUser = (id: string) => {
     setAddMoneyForm((prev) => ({
       ...prev,
       selectedUserIds: prev.selectedUserIds.includes(id)
@@ -182,7 +201,7 @@ const removeAvatar = () => {
     }));
   };
 
-  const addMoneyToSelectedUsers = () => {
+  const addMoneyToSelectedUsers = async () => {
     const parsedAmount = Number(addMoneyForm.amount.replace(",", "."));
 
     if (addMoneyForm.selectedUserIds.length === 0) {
@@ -201,18 +220,39 @@ const removeAvatar = () => {
       return;
     }
 
+    const updates = users
+      .filter((user) => addMoneyForm.selectedUserIds.includes(user.id))
+      .map((user) => ({
+        id: user.id,
+        balance: Number((user.balance + parsedAmount).toFixed(2)),
+      }));
+
+    for (const update of updates) {
+      const { error } = await supabase
+        .from("users")
+        .update({ balance: update.balance })
+        .eq("id", update.id);
+
+      if (error) {
+        setAddMoneyForm((prev) => ({
+          ...prev,
+          message: "Opslaan in database mislukt.",
+        }));
+        return;
+      }
+    }
+
     setUsers((prev) =>
-      prev.map((user) =>
-        addMoneyForm.selectedUserIds.includes(user.id)
-          ? { ...user, balance: Number((user.balance + parsedAmount).toFixed(2)) }
-          : user
-      )
+      prev.map((user) => {
+        const found = updates.find((u) => u.id === user.id);
+        return found ? { ...user, balance: found.balance } : user;
+      })
     );
 
     setAddMoneyForm({
       selectedUserIds: [],
       amount: "",
-      message: `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`,
+      message: `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${updates.length} gebruiker(s).`,
     });
   };
 
