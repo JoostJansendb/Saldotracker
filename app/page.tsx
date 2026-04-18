@@ -798,57 +798,48 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
 
               <CardContent>
                 <div className="overflow-hidden rounded-2xl border bg-white">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Datum</TableHead>
-                        <TableHead>Team</TableHead>
-                        <TableHead>Uit/thuis</TableHead>
-                        <TableHead>Kilometers</TableHead>
-                        <TableHead>Rijders</TableHead>
-                      </TableRow>
-                    </TableHeader>
+                  <div className="space-y-3">
+                    {rideSchedule.map((match) => {
+                      const isAway = match.location.toLowerCase() === "uit";
 
-                    <TableBody>
-                      {rideSchedule.map((match) => {
-                        const isAway = match.location.toLowerCase() === "uit";
-
-                        return (
-                          <TableRow
-                            key={`${match.date}-${match.team}-${match.location}`}
-                            className={isAway ? "bg-gray-100" : "bg-white"}
-                          >
-                            <TableCell className="font-medium text-black">
-                              {match.date}
-                            </TableCell>
-                            <TableCell className="text-black">{match.team || "-"}</TableCell>
-                            <TableCell className="capitalize text-black">
+                      return (
+                        <div
+                          key={`${match.date}-${match.team}`}
+                          className={`rounded-2xl p-4 shadow-sm ${
+                            isAway ? "bg-gray-100" : "bg-white-100"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm text-slate-500">{match.date}</p>
+                            <span className="text-sm font-medium capitalize">
                               {match.location}
-                            </TableCell>
-                            <TableCell className="text-black">
-                              {match.kilometers ?? "-"}
-                            </TableCell>
-                            <TableCell className="text-black">
-                              {match.riders.length > 0 ? (
-                                <div className="flex flex-wrap gap-2">
-                                  {match.riders.map((rider) => (
-                                    <span
-                                      key={rider}
-                                      className="rounded-full bg-white/70 px-2 py-1 text-xs font-medium text-slate-900"
-                                    >
-                                      {rider}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : (
-                                "-"
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                            </span>
+                          </div>
+
+                          <h3 className="mt-1 text-base font-semibold">
+                            {match.team || "Thuiswedstrijd"}
+                          </h3>
+
+                          <div className="mt-2 text-sm text-slate-600">
+                            {match.kilometers ? `${match.kilometers} km` : "Geen kilometers"}
+                          </div>
+
+                          {match.riders.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {match.riders.map((rider) => (
+                                <span
+                                  key={rider}
+                                  className="rounded-full bg-white px-2 py-1 text-xs font-medium"
+                                >
+                                  {rider}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -891,40 +882,39 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
           </div>
         </div>
       ) : null}
-        <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur">
-          <div className="mx-auto grid max-w-md grid-cols-2 gap-2 px-3 py-2">
-          <button
-            type="button"
-            onClick={() => setActiveMainTab("saldo")}
-            className={`rounded-2xl py-2 transition ${
-              activeMainTab === "saldo"
-                ? "bg-slate-900 text-white"
-                : "bg-slate-100 text-slate-700"
-            }`}
-          >
-            <div className="flex flex-col items-center justify-center text-xs">
-              <Wallet className="h-5 w-5 mb-1" />
-              Saldo
-            </div>
-          </button>
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+          <div className="mx-auto grid grid-cols-2 gap-4 px-3 py-2 justify-center">
+            
+            <button
+              onClick={() => setActiveMainTab("saldo")}
+              className={`rounded-2xl py-2 transition ${
+                activeMainTab === "saldo"
+                  ? "bg-slate-900 text-white"
+                  : "bg-slate-100 text-slate-700"
+              }`}
+            >
+              <div className="flex flex-col items-center text-xs">
+                <Wallet className="h-5 w-5 mb-1" />
+                Saldo
+              </div>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveMainTab("rijschema")}
-            className={`rounded-2xl py-2 transition ${
-              activeMainTab === "rijschema"
-                ? "bg-slate-900 text-white"
-                : "bg-slate-100 text-slate-700"
-            }`}
-          >
-            <div className="flex flex-col items-center justify-center text-xs">
-              <Car className="h-5 w-5 mb-1" />
-              Rijschema
-            </div>
-          </button>
+            <button
+              onClick={() => setActiveMainTab("rijschema")}
+              className={`rounded-2xl py-2 transition ${
+                activeMainTab === "rijschema"
+                  ? "bg-slate-900 text-white"
+                  : "bg-slate-100 text-slate-700"
+              }`}
+            >
+              <div className="flex flex-col items-center text-xs">
+                <Car className="h-5 w-5 mb-1" />
+                Rijschema
+              </div>
+            </button>
 
+          </div>
         </div>
-      </div>
     </div>
   );
 }
