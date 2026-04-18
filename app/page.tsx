@@ -457,7 +457,7 @@ useEffect(() => {
                   ) : null}
                 </div>
                 <div>
-                  <h1 className="text-xl font-bold sm:text-2xl">Welkom, {currentUser.name}</h1>
+                  <h1 className="text-xl font-semibold sm:text-2xl">Welkom, {currentUser.name}</h1>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
                     <Badge className="rounded-full">
                       {currentUser.role === "admin" ? "Admin" : "Gebruiker"}
@@ -688,7 +688,7 @@ useEffect(() => {
               </div>
 
               <div className="flex justify-center">
-                <Avatar className="h-28 w-28 ring-4 ring-slate-100">
+                <Avatar className="h-56 w-56 ring-4 ring-slate-100">
                   {selectedUser.avatar ? (
                     <AvatarImage src={selectedUser.avatar} alt={selectedUser.name} />
                   ) : null}
