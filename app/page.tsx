@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LogOut, ShieldCheck, Wallet, PlusCircle } from "lucide-react";
 import { motion } from "framer-motion";
+import { RefreshCw } from "lucide-react";
 
 type User = {
   id: string;
@@ -151,7 +152,12 @@ useEffect(() => {
   }
 }, [currentUser]);
 
-  const login = (e: React.FormEvent<HTMLFormElement>) => {
+  const refreshUsers = async () => {
+    const { data } = await supabase.from("users").select("*");
+    if (data) setUsers(data);
+  };  
+
+const login = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
     const found = users.find(
@@ -712,6 +718,12 @@ useEffect(() => {
           </div>
         </div>
       ) : null}
+      <div className="flex justify-center pt-4 pb-6">
+        <Button onClick={refreshUsers} className="rounded-2xl">
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Verversen
+        </Button>
+      </div>
     </div>
   );
 }
