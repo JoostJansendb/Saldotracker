@@ -38,6 +38,14 @@ type RideScheduleItem = {
   riders: string[];
 };
 
+type Transaction = {
+  id: string;
+  created_at: string;
+  user_id: string;
+  name: string;
+  amount_change: number;
+};
+
 const rideSchedule: RideScheduleItem[] = [
   {
     date: "1/3/2026",
@@ -132,6 +140,13 @@ function euro(amount: number) {
   }).format(amount);
 }
 
+function shortDate(dateString: string) {
+  return new Intl.DateTimeFormat("nl-NL", {
+    day: "2-digit",
+    month: "2-digit",
+  }).format(new Date(dateString));
+}
+
 function getInitials(name: string) {
   return name
     .split(" ")
@@ -146,6 +161,7 @@ export default function SaldoTrackerApp() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [error, setError] = useState("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema">("saldo");
@@ -168,6 +184,18 @@ export default function SaldoTrackerApp() {
     }
 
     if (data) setUsers(data);
+
+    const { data: transactionData, error: transactionError } = await supabase
+      .from("transactions")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (transactionError) {
+      console.error("Fout bij ophalen transacties:", transactionError);
+      return;
+    }
+
+    if (transactionData) setTransactions(transactionData);
   };
   
   useEffect(() => {
@@ -239,6 +267,12 @@ export default function SaldoTrackerApp() {
     return [...users]
       .filter((user) => user.role !== "admin")
       .sort((a, b) => b.balance - a.balance);
+  }, [users]);
+
+  const totalBalance = useMemo(() => {
+    return users
+      .filter((user) => user.role !== "admin")
+      .reduce((sum, user) => sum + user.balance, 0);
   }, [users]);
 
 useEffect(() => {
@@ -383,39 +417,48 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
       return;
     }
 
-    const updates = users
-      .filter((user) => addMoneyForm.selectedUserIds.includes(user.id))
-      .map((user) => ({
-        id: user.id,
-        balance: Number((user.balance + parsedAmount).toFixed(2)),
-      }));
+    for (const userId of addMoneyForm.selectedUserIds) {
+      const user = users.find((u) => u.id === userId);
+      if (!user) continue;
 
-    for (const update of updates) {
-      const { error } = await supabase
+      const newBalance = Number((user.balance + parsedAmount).toFixed(2));
+
+      const { error: updateError } = await supabase
         .from("users")
-        .update({ balance: update.balance })
-        .eq("id", update.id);
+        .update({ balance: newBalance })
+        .eq("id", userId);
 
-      if (error) {
+      if (updateError) {
         setAddMoneyForm((prev) => ({
           ...prev,
-          message: "Opslaan in database mislukt.",
+          message: "Saldo opslaan mislukt.",
+        }));
+        return;
+      }
+
+      const { error: transactionError } = await supabase
+        .from("transactions")
+        .insert({
+          user_id: user.id,
+          name: user.name,
+          amount_change: parsedAmount,
+        });
+
+      if (transactionError) {
+        setAddMoneyForm((prev) => ({
+          ...prev,
+          message: "Transactie opslaan mislukt.",
         }));
         return;
       }
     }
 
-    setUsers((prev) =>
-      prev.map((user) => {
-        const found = updates.find((u) => u.id === user.id);
-        return found ? { ...user, balance: found.balance } : user;
-      })
-    );
+    await refreshUsers();
 
     setAddMoneyForm({
       selectedUserIds: [],
       amount: "",
-      message: `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${updates.length} gebruiker(s).`,
+      message: `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`,
     });
   };
 
@@ -577,7 +620,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                     <Badge className="rounded-full">
                       {currentUser.role === "admin" ? "Admin" : "Gebruiker"}
                     </Badge>
-                    <span className="text-sm text-slate-500">Saldo per teamlid</span>
+                    <span className="text-sm text-slate-500">Teaminformatie heren 6</span>
                   </div>
                 </div>
               </div>
@@ -602,7 +645,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                     <div>
                       <CardTitle className="text-xl">Saldo</CardTitle>
                       <p className="mt-1 text-sm text-slate-500">
-                        Gesorteerd van hoog naar laag.
+                        Teamsaldo totaal: {euro(totalBalance)}
                       </p>
                     </div>
 
@@ -614,8 +657,15 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                         </Badge>
                       ) : null}
 
-                      <TabsList className={`grid rounded-2xl ${currentUser.role === "admin" ? "grid-cols-2" : "grid-cols-1"} w-full sm:w-[280px]`}>
+                      <TabsList
+                        className={`grid rounded-2xl w-full ${
+                          currentUser.role === "admin"
+                            ? "grid-cols-3 sm:w-[420px]"
+                            : "grid-cols-2 sm:w-[300px]"
+                        }`}
+                      >
                         <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
+                        <TabsTrigger value="transacties">Transacties</TabsTrigger>
                         {currentUser.role === "admin" ? (
                           <TabsTrigger value="toevoegen">Saldo aanpassen</TabsTrigger>
                         ) : null}
@@ -662,7 +712,49 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                       </Table>
                     </div>
                   </TabsContent>
-
+                  <TabsContent value="transacties" className="mt-0">
+                    <div className="overflow-hidden rounded-2xl border bg-white">
+                      <div className="max-h-[420px] overflow-y-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Datum</TableHead>
+                              <TableHead>Naam</TableHead>
+                              <TableHead className="text-right">Verandering</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {transactions.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={3} className="text-center text-slate-500">
+                                  Nog geen transacties.
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              transactions.map((transaction) => (
+                                <TableRow key={transaction.id}>
+                                  <TableCell>{shortDate(transaction.created_at)}</TableCell>
+                                  <TableCell className="font-medium">{transaction.name}</TableCell>
+                                  <TableCell className="text-right font-semibold">
+                                    <span
+                                      className={
+                                        transaction.amount_change >= 0
+                                          ? "text-green-600"
+                                          : "text-red-600"
+                                      }
+                                    >
+                                      {transaction.amount_change >= 0 ? "+" : ""}
+                                      {euro(transaction.amount_change)}
+                                    </span>
+                                  </TableCell>
+                                </TableRow>
+                              ))
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  </TabsContent>
                   {currentUser.role === "admin" ? (
                     <TabsContent value="toevoegen" className="mt-0">
                       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
