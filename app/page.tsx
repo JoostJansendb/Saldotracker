@@ -139,15 +139,12 @@ function euro(amount: number) {
   }).format(amount);
 }
 
-function formatDateTime(dateString: string) {
+function formatDate(dateString: string) {
   const date = new Date(dateString);
   const dd = String(date.getDate()).padStart(2, "0");
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const yy = String(date.getFullYear()).slice(-2);
-  const hh = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  const ss = String(date.getSeconds()).padStart(2, "0");
-  return `${dd}/${mm}/${yy} ${hh}:${min}:${ss}`;
+  return `${dd}/${mm}/${yy}`;
 }
 
 function getInitials(name: string) {
@@ -211,6 +208,7 @@ export default function SaldoTrackerApp() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordMessage, setPasswordMessage] = useState("");
   const [isSavingPassword, setIsSavingPassword] = useState(false);
+  const [expandedStatMonths, setExpandedStatMonths] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const userModalRef = useRef<HTMLDivElement | null>(null);
@@ -448,7 +446,10 @@ export default function SaldoTrackerApp() {
       "dec",
     ];
 
-    const monthlyTotalsMap = new Map<string, { label: string; total: number; sort: number }>();
+    const monthlyTotalsMap = new Map<
+      string,
+      { key: string; label: string; total: number; sort: number; perUser: Map<string, number> }
+    >();
     for (const t of positiveTransactions) {
       const d = new Date(t.created_at);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -457,14 +458,29 @@ export default function SaldoTrackerApp() {
       const existing = monthlyTotalsMap.get(key);
       if (existing) {
         existing.total += t.amount_change;
+        existing.perUser.set(t.user_id, (existing.perUser.get(t.user_id) ?? 0) + t.amount_change);
       } else {
-        monthlyTotalsMap.set(key, { label, total: t.amount_change, sort });
+        const perUser = new Map<string, number>();
+        perUser.set(t.user_id, t.amount_change);
+        monthlyTotalsMap.set(key, { key, label, total: t.amount_change, sort, perUser });
       }
     }
 
     const monthlyTotals = Array.from(monthlyTotalsMap.values())
       .sort((a, b) => b.sort - a.sort)
-      .slice(0, 6);
+      .slice(0, 6)
+      .map((item) => ({
+        key: item.key,
+        label: item.label,
+        total: item.total,
+        perUserTotals: Array.from(item.perUser.entries())
+          .map(([userId, total]) => ({
+            userId,
+            total,
+            name: users.find((u) => u.id === userId)?.name ?? "Onbekend",
+          }))
+          .sort((a, b) => b.total - a.total),
+      }));
 
     return {
       positiveCount: positiveTransactions.length,
@@ -1024,7 +1040,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Datum/tijd</TableHead>
+                              <TableHead>Datum</TableHead>
                               <TableHead>Naam</TableHead>
                               <TableHead className="text-right">Verandering</TableHead>
                             </TableRow>
@@ -1039,7 +1055,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                             ) : (
                               transactions.map((transaction) => (
                                 <TableRow key={transaction.id}>
-                                  <TableCell>{formatDateTime(transaction.created_at)}</TableCell>
+                                  <TableCell>{formatDate(transaction.created_at)}</TableCell>
                                   <TableCell className="font-medium">{transaction.name}</TableCell>
                                   <TableCell className="text-right font-semibold">
                                     <span
@@ -1320,12 +1336,38 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                       ) : (
                         <div className="space-y-2">
                           {statistics.monthlyTotals.map((item) => (
-                            <div
-                              key={item.label}
-                              className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
-                            >
-                              <span className="text-sm text-slate-600">{item.label}</span>
-                              <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
+                            <div key={item.key} className="rounded-xl bg-slate-50">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedStatMonths((prev) =>
+                                    prev.includes(item.key)
+                                      ? prev.filter((monthKey) => monthKey !== item.key)
+                                      : [...prev, item.key]
+                                  )
+                                }
+                                className="flex w-full items-center justify-between px-3 py-2 text-left"
+                              >
+                                <span className="text-sm text-slate-700">{item.label}</span>
+                                <span className="text-sm font-semibold text-slate-900">
+                                  {euro(item.total)}
+                                </span>
+                              </button>
+                              {expandedStatMonths.includes(item.key) ? (
+                                <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
+                                  {item.perUserTotals.map((person) => (
+                                    <div
+                                      key={`${item.key}-${person.userId}`}
+                                      className="flex items-center justify-between text-sm"
+                                    >
+                                      <span className="text-slate-600">{person.name}</span>
+                                      <span className="font-medium text-slate-900">
+                                        {euro(person.total)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                           ))}
                         </div>
@@ -1466,11 +1508,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
         </div>
       ) : null}
         <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-          <div className="mx-auto flex max-w-md justify-around py-3">
+          <div className="mx-auto grid w-full max-w-md grid-cols-3 py-3">
 
             <button
               onClick={() => setActiveMainTab("saldo")}
-              className="flex flex-col items-center justify-center"
+              className="flex w-full flex-col items-center justify-center"
             >
               <Wallet
                 className={`transition ${
@@ -1492,7 +1534,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
 
             <button
               onClick={() => setActiveMainTab("rijschema")}
-              className="flex flex-col items-center justify-center"
+              className="flex w-full flex-col items-center justify-center"
             >
               <Car
                 className={`transition ${
@@ -1514,7 +1556,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
 
             <button
               onClick={() => setActiveMainTab("statistieken")}
-              className="flex flex-col items-center justify-center"
+              className="flex w-full flex-col items-center justify-center"
             >
               <BarChart3
                 className={`transition ${
