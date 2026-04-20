@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "auth:import-users": "node scripts/import-users-to-auth.mjs",
+    "auth:sync-uuids": "node scripts/sync-user-uuids-from-auth.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.3",

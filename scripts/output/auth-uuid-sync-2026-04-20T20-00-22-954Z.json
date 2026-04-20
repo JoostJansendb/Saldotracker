@@ -1,0 +1,165 @@
+{
+  "startedAt": "2026-04-20T20:00:22.494Z",
+  "dryRun": false,
+  "usersTable": "users",
+  "transactionsTable": "transactions",
+  "sourceUsers": 20,
+  "authUsers": 20,
+  "plannedUpdates": [
+    {
+      "legacyId": "7293fccf-88c5-4ee7-bbfe-5f83346d07c4",
+      "authId": "bc99789e-2b13-47c3-bc42-2db1c26aff62",
+      "username": "olivier",
+      "name": "Olivier Eerden",
+      "role": "user"
+    },
+    {
+      "legacyId": "20f913b6-6a82-49d8-8ea4-be67fc6e72e3",
+      "authId": "1d1e4551-d899-40ef-9ee5-53ed6c4b1ea3",
+      "username": "joost",
+      "name": "Joost Jansen",
+      "role": "user"
+    },
+    {
+      "legacyId": "b58a4bc5-6d32-4376-83e0-6a001ad7ab9a",
+      "authId": "1d483226-fa1d-4bd5-93d4-5056da5e8f5c",
+      "username": "jonathan",
+      "name": "Jonathan Eerden",
+      "role": "user"
+    },
+    {
+      "legacyId": "d3ac4644-8c78-42b7-b13d-6f223b55d5da",
+      "authId": "796a11db-e61d-4add-a2a7-fe96c1f6538a",
+      "username": "tim",
+      "name": "Tim Rovers",
+      "role": "user"
+    },
+    {
+      "legacyId": "4351a57f-c345-4b95-b0cb-e0fdbf03b317",
+      "authId": "b9d8995c-9192-4fbc-a85f-c73f2ce88776",
+      "username": "timon",
+      "name": "Timon Ramaekers",
+      "role": "user"
+    }
+  ],
+  "skipped": [
+    {
+      "legacyId": "5d5f48e9-3a0a-4440-91bd-5b552ba954e9",
+      "authId": "6eceeaa3-3c84-40dd-b249-308d00a0e5b6",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "967a9460-f937-4f6b-aefe-50ac6602ee42",
+      "authId": "c06851d1-174f-475a-b147-b837230c1068",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "5c5af48d-99db-4b28-aa74-763d68c30770",
+      "authId": "3b2dec39-e83e-4a00-a707-cf341f5cce79",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "81eea0a2-ea01-42b6-a0c6-2ee6cd62f1a8",
+      "authId": "93a6e0f8-85b6-4b12-a42f-ba51d077895b",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "5111af4a-0d4a-4139-8ca7-9a6f865a89af",
+      "authId": "b21aa094-67f9-4381-bfef-fbc0f4052888",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "5fe63deb-a88a-4919-ad52-19f9ff4ce478",
+      "authId": "c18ff454-50df-493f-83f6-c7d5d6d6a02a",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "3984f987-1831-492e-befe-69a0108df7ba",
+      "authId": "b8a29501-ac8f-4560-b8d2-ce29a40525b6",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "30dbb2b6-ab15-4fa8-8bea-6894bf9afcec",
+      "authId": "87aceacc-0296-4f1b-ae45-fc4155090008",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "f4ea7d6e-6924-4608-96ba-57d510e0b812",
+      "authId": "b2b3de47-0ca1-4275-94ad-96b07a1c368a",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "4ba3a182-61df-43b5-885d-ac874c6507e6",
+      "authId": "6ac686be-7f97-43ff-8f17-2dc643197dfc",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "3458ef31-e001-42c1-af9c-08fe3b58c8c6",
+      "authId": "372fd061-3523-402a-a90f-ed233f77f589",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "6e3a6df6-e7c5-491e-93cd-9267d435955a",
+      "authId": "501b5be5-be33-43cc-bd52-59cc183a8422",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "fdc020c7-8a24-4f05-9267-1fa2e39478b8",
+      "authId": "1c976c20-e8d5-48dd-abd1-31da70b05aef",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "01150446-5ebb-4537-b54a-cea418df94a8",
+      "authId": "45087b56-b56c-40ab-af00-a6e98bf84464",
+      "reason": "legacy_user_not_found_in_users_table"
+    },
+    {
+      "legacyId": "2acdbeb9-d961-4b94-9785-52d905f1a31c",
+      "authId": "4884ea48-b137-4cd3-9111-90ba9a627572",
+      "reason": "legacy_user_not_found_in_users_table"
+    }
+  ],
+  "applied": [],
+  "failed": [
+    {
+      "legacyId": "7293fccf-88c5-4ee7-bbfe-5f83346d07c4",
+      "authId": "bc99789e-2b13-47c3-bc42-2db1c26aff62",
+      "username": "olivier",
+      "name": "Olivier Eerden",
+      "role": "user",
+      "error": "{\"message\":\"insert or update on table \\\"transactions\\\" violates foreign key constraint \\\"transactions_user_id_fkey\\\"\",\"code\":\"23503\",\"details\":\"Key (user_id)=(bc99789e-2b13-47c3-bc42-2db1c26aff62) is not present in table \\\"users\\\".\",\"hint\":null}"
+    },
+    {
+      "legacyId": "20f913b6-6a82-49d8-8ea4-be67fc6e72e3",
+      "authId": "1d1e4551-d899-40ef-9ee5-53ed6c4b1ea3",
+      "username": "joost",
+      "name": "Joost Jansen",
+      "role": "user",
+      "error": "{\"message\":\"insert or update on table \\\"transactions\\\" violates foreign key constraint \\\"transactions_user_id_fkey\\\"\",\"code\":\"23503\",\"details\":\"Key (user_id)=(1d1e4551-d899-40ef-9ee5-53ed6c4b1ea3) is not present in table \\\"users\\\".\",\"hint\":null}"
+    },
+    {
+      "legacyId": "b58a4bc5-6d32-4376-83e0-6a001ad7ab9a",
+      "authId": "1d483226-fa1d-4bd5-93d4-5056da5e8f5c",
+      "username": "jonathan",
+      "name": "Jonathan Eerden",
+      "role": "user",
+      "error": "{\"message\":\"insert or update on table \\\"transactions\\\" violates foreign key constraint \\\"transactions_user_id_fkey\\\"\",\"code\":\"23503\",\"details\":\"Key (user_id)=(1d483226-fa1d-4bd5-93d4-5056da5e8f5c) is not present in table \\\"users\\\".\",\"hint\":null}"
+    },
+    {
+      "legacyId": "d3ac4644-8c78-42b7-b13d-6f223b55d5da",
+      "authId": "796a11db-e61d-4add-a2a7-fe96c1f6538a",
+      "username": "tim",
+      "name": "Tim Rovers",
+      "role": "user",
+      "error": "{\"message\":\"insert or update on table \\\"transactions\\\" violates foreign key constraint \\\"transactions_user_id_fkey\\\"\",\"code\":\"23503\",\"details\":\"Key (user_id)=(796a11db-e61d-4add-a2a7-fe96c1f6538a) is not present in table \\\"users\\\".\",\"hint\":null}"
+    },
+    {
+      "legacyId": "4351a57f-c345-4b95-b0cb-e0fdbf03b317",
+      "authId": "b9d8995c-9192-4fbc-a85f-c73f2ce88776",
+      "username": "timon",
+      "name": "Timon Ramaekers",
+      "role": "user",
+      "error": "{\"message\":\"insert or update on table \\\"transactions\\\" violates foreign key constraint \\\"transactions_user_id_fkey\\\"\",\"code\":\"23503\",\"details\":\"Key (user_id)=(b9d8995c-9192-4fbc-a85f-c73f2ce88776) is not present in table \\\"users\\\".\",\"hint\":null}"
+    }
+  ]
+}

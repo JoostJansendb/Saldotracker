@@ -10,14 +10,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, Car } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 
 type User = {
   id: string;
   username: string;
-  password: string;
   name: string;
   role: "admin" | "user";
   balance: number;
@@ -140,11 +139,15 @@ function euro(amount: number) {
   }).format(amount);
 }
 
-function shortDate(dateString: string) {
-  return new Intl.DateTimeFormat("nl-NL", {
-    day: "2-digit",
-    month: "2-digit",
-  }).format(new Date(dateString));
+function formatDateTime(dateString: string) {
+  const date = new Date(dateString);
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yy = String(date.getFullYear()).slice(-2);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${dd}/${mm}/${yy} ${hh}:${min}:${ss}`;
 }
 
 function getInitials(name: string) {
@@ -156,6 +159,36 @@ function getInitials(name: string) {
     .slice(0, 2);
 }
 
+const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.local";
+
+function sanitizeUsername(username: string) {
+  return username
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ".")
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .slice(0, 48);
+}
+
+function usernameToAuthEmail(username: string) {
+  const safe = sanitizeUsername(username);
+  return `${safe}@${authEmailDomain}`;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export default function SaldoTrackerApp() {
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -164,19 +197,49 @@ export default function SaldoTrackerApp() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [error, setError] = useState("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema">("saldo");
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({
     selectedUserIds: [],
     amount: "",
     message: "",
   });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [currentPasswordForChange, setCurrentPasswordForChange] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const userModalRef = useRef<HTMLDivElement | null>(null);
 
+  const loadCurrentUser = async (userId: string) => {
+    const { data, error: currentUserError } = await supabase
+      .from("users")
+      .select("id, username, name, role, balance, avatar")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (currentUserError) {
+      console.error("Fout bij ophalen huidige gebruiker:", currentUserError);
+      return null;
+    }
+
+    if (!data) {
+      console.error("Geen profiel gevonden voor auth gebruiker.");
+      return null;
+    }
+
+    setCurrentUser(data);
+    return data;
+  };
+
   const refreshUsers = async () => {
-    const { data, error } = await supabase.from("users").select("*");
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, username, name, role, balance, avatar");
 
     if (error) {
       console.error("Fout bij verversen users:", error);
@@ -187,7 +250,7 @@ export default function SaldoTrackerApp() {
 
     const { data: transactionData, error: transactionError } = await supabase
       .from("transactions")
-      .select("*")
+      .select("id, created_at, user_id, name, amount_change")
       .order("created_at", { ascending: false });
 
     if (transactionError) {
@@ -237,17 +300,85 @@ export default function SaldoTrackerApp() {
   }, [isProfileMenuOpen]);
 
   useEffect(() => {
-      refreshUsers();
-    }, []);
+    let isMounted = true;
+
+    const bootstrapSession = async () => {
+      try {
+        const { data, error: sessionError } = await withTimeout(
+          supabase.auth.getSession(),
+          8000,
+          "getSession"
+        );
+
+        if (sessionError) {
+          console.error("Fout bij ophalen sessie:", sessionError);
+        }
+
+        const authUserId = data.session?.user.id;
+        if (!authUserId) {
+          if (!isMounted) return;
+          setCurrentUser(null);
+          setUsers([]);
+          setTransactions([]);
+          return;
+        }
+
+        const profile = await withTimeout(loadCurrentUser(authUserId), 8000, "loadCurrentUser");
+        if (profile) {
+          void refreshUsers();
+        } else {
+          await supabase.auth.signOut();
+        }
+      } catch (bootstrapError) {
+        console.error("Fout tijdens sessie-initialisatie:", bootstrapError);
+      } finally {
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
+      }
+    };
+
+    void bootstrapSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (!session?.user?.id) {
+          if (!isMounted) return;
+          setCurrentUser(null);
+          setUsers([]);
+          setTransactions([]);
+          setIsAuthLoading(false);
+          return;
+        }
+
+        const profile = await loadCurrentUser(session.user.id);
+        if (profile) {
+          await refreshUsers();
+          setError("");
+        }
+
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
+    if (!currentUser) return;
+
     const handleAppVisible = () => {
-      refreshUsers();
+      void refreshUsers();
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        refreshUsers();
+        void refreshUsers();
       }
     };
 
@@ -260,7 +391,7 @@ export default function SaldoTrackerApp() {
       window.removeEventListener("pageshow", handleAppVisible);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [currentUser]);
 
 
   const sortedUsers = useMemo(() => {
@@ -275,53 +406,133 @@ export default function SaldoTrackerApp() {
       .reduce((sum, user) => sum + user.balance, 0);
   }, [users]);
 
-useEffect(() => {
-  const storedUser = localStorage.getItem("currentUser");
-  if (!storedUser || users.length === 0) return;
+  const statistics = useMemo(() => {
+    const positiveTransactions = transactions.filter((t) => t.amount_change > 0);
+    const totalTopUps = positiveTransactions.reduce(
+      (sum, t) => sum + t.amount_change,
+      0
+    );
+    const averageTopUp =
+      positiveTransactions.length > 0 ? totalTopUps / positiveTransactions.length : 0;
+    const largestTopUp =
+      positiveTransactions.length > 0
+        ? Math.max(...positiveTransactions.map((t) => t.amount_change))
+        : 0;
 
-  const parsedUser = JSON.parse(storedUser);
+    const topUpsByUser = new Map<string, number>();
+    for (const t of positiveTransactions) {
+      topUpsByUser.set(t.user_id, (topUpsByUser.get(t.user_id) ?? 0) + t.amount_change);
+    }
 
-  if (parsedUser.role === "admin") {
-    setCurrentUser(parsedUser);
-    return;
-  }
+    const topSpenders = Array.from(topUpsByUser.entries())
+      .map(([userId, total]) => ({
+        userId,
+        total,
+        name: users.find((u) => u.id === userId)?.name ?? "Onbekend",
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 3);
 
-  const freshUser = users.find((user) => user.id === parsedUser.id);
+    const monthLabels = [
+      "jan",
+      "feb",
+      "mrt",
+      "apr",
+      "mei",
+      "jun",
+      "jul",
+      "aug",
+      "sep",
+      "okt",
+      "nov",
+      "dec",
+    ];
 
-  if (freshUser) {
-    setCurrentUser(freshUser);
-    localStorage.setItem("currentUser", JSON.stringify(freshUser));
-  }
-}, [users]);
+    const monthlyTotalsMap = new Map<string, { label: string; total: number; sort: number }>();
+    for (const t of positiveTransactions) {
+      const d = new Date(t.created_at);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = `${monthLabels[d.getMonth()]} '${String(d.getFullYear()).slice(-2)}`;
+      const sort = d.getFullYear() * 100 + (d.getMonth() + 1);
+      const existing = monthlyTotalsMap.get(key);
+      if (existing) {
+        existing.total += t.amount_change;
+      } else {
+        monthlyTotalsMap.set(key, { label, total: t.amount_change, sort });
+      }
+    }
 
-useEffect(() => {
-  if (currentUser) {
-    localStorage.setItem("currentUser", JSON.stringify(currentUser));
-  }
-}, [currentUser]);
+    const monthlyTotals = Array.from(monthlyTotalsMap.values())
+      .sort((a, b) => b.sort - a.sort)
+      .slice(0, 6);
 
-const login = (e: React.FormEvent<HTMLFormElement>) => {
+    return {
+      positiveCount: positiveTransactions.length,
+      totalTopUps,
+      averageTopUp,
+      largestTopUp,
+      topSpenders,
+      monthlyTotals,
+    };
+  }, [transactions, users]);
+
+  const totalPositivePerUser = useMemo(() => {
+    const totals = new Map<string, number>();
+
+    for (const transaction of transactions) {
+      if (transaction.amount_change <= 0) continue;
+      totals.set(
+        transaction.user_id,
+        (totals.get(transaction.user_id) ?? 0) + transaction.amount_change
+      );
+    }
+
+    return totals;
+  }, [transactions]);
+
+const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const found = users.find(
-      (user) => user.username === username.trim() && user.password === password
-    );
+    const normalizedUsername = username.trim();
+    if (!normalizedUsername || !password.trim()) {
+      setError("Vul gebruikersnaam en wachtwoord in.");
+      return;
+    }
 
-    if (!found) {
+    const safeUsername = sanitizeUsername(normalizedUsername);
+    if (!safeUsername) {
+      setError("Vul een geldige gebruikersnaam in.");
+      return;
+    }
+
+    const email = usernameToAuthEmail(safeUsername);
+
+    const { error: loginError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (loginError) {
       setError("Onjuiste gebruikersnaam of wachtwoord.");
       return;
     }
 
-    setCurrentUser(found);
-    localStorage.setItem("currentUser", JSON.stringify(found));
     setError("");
     setUsername("");
     setPassword("");
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const { error: logoutError } = await supabase.auth.signOut({ scope: "local" });
+    if (logoutError) {
+      console.error("Fout bij uitloggen:", logoutError);
+    }
+
     setCurrentUser(null);
-    localStorage.removeItem("currentUser");
+    setUsers([]);
+    setTransactions([]);
+    setIsProfileMenuOpen(false);
+    setIsPasswordModalOpen(false);
   };
 
   const updateCurrentUserAvatar = async (avatar: string) => {
@@ -386,6 +597,67 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
 
     setCurrentUser((prev) => (prev ? { ...prev, avatar: "" } : prev));
     setIsProfileMenuOpen(false);
+  };
+
+  const changePassword = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setPasswordMessage("");
+
+    if (!currentPasswordForChange) {
+      setPasswordMessage("Vul je huidige wachtwoord in.");
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      setPasswordMessage("Wachtwoord moet minimaal 8 tekens zijn.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage("Wachtwoorden komen niet overeen.");
+      return;
+    }
+
+    setIsSavingPassword(true);
+
+    const {
+      data: { user: authUser },
+      error: authUserError,
+    } = await supabase.auth.getUser();
+
+    if (authUserError || !authUser?.email) {
+      setIsSavingPassword(false);
+      setPasswordMessage("Kon je account niet verifiëren. Log opnieuw in.");
+      return;
+    }
+
+    const { error: reAuthError } = await supabase.auth.signInWithPassword({
+      email: authUser.email,
+      password: currentPasswordForChange,
+    });
+
+    if (reAuthError) {
+      setIsSavingPassword(false);
+      setPasswordMessage("Huidig wachtwoord is onjuist.");
+      return;
+    }
+
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+
+    setIsSavingPassword(false);
+
+    if (updateError) {
+      setPasswordMessage("Wachtwoord wijzigen mislukt. Probeer opnieuw.");
+      console.error("Fout bij wachtwoord wijzigen:", updateError);
+      return;
+    }
+
+    setCurrentPasswordForChange("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordMessage("Wachtwoord succesvol gewijzigd.");
   };
 
   const toggleSelectedUser = (id: string) => {
@@ -462,6 +734,21 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
     });
   };
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 p-4 md:p-8">
+        <div className="mx-auto flex min-h-[85vh] max-w-md items-center justify-center">
+          <Card className="w-full rounded-3xl border-0 shadow-xl">
+            <CardContent className="flex items-center justify-center gap-3 py-12 text-slate-600">
+              <RefreshCw className="h-5 w-5 animate-spin" />
+              <span>Sessie controleren...</span>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 p-4 md:p-8">
@@ -520,7 +807,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                 </form>
 
                 <div className="mt-6 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-                  <p className="font-medium text-slate-800">Versie 1.0.0</p>
+                  <p className="font-medium text-slate-800">Versie 1.0.9</p>
                   <div className="mt-2 space-y-1">
                   </div>
                 </div>
@@ -533,8 +820,8 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-3 pb-24 sm:p-4 md:p-8">
-      <div className="mx-auto max-w-5xl space-y-4 pb-24 md:space-y-6">
+    <div className="min-h-screen bg-slate-50 p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-8 md:pb-[calc(6rem+env(safe-area-inset-bottom))]">
+      <div className="mx-auto max-w-5xl space-y-4 md:space-y-6">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -610,6 +897,25 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                             Profielfoto verwijderen
                           </Button>
                         </div>
+
+                        <div className="border-t border-slate-200 pt-3">
+                          <p className="font-semibold text-slate-900">Wachtwoord wijzigen</p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="mt-3 w-full rounded-2xl"
+                            onClick={() => {
+                              setPasswordMessage("");
+                              setCurrentPasswordForChange("");
+                              setNewPassword("");
+                              setConfirmPassword("");
+                              setIsProfileMenuOpen(false);
+                              setIsPasswordModalOpen(true);
+                            }}
+                          >
+                            wachtwoord wijzigen
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -625,7 +931,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                 </div>
               </div>
 
-              <Button variant="outline" onClick={logout} className="rounded-2xl">
+              <Button type="button" variant="outline" onClick={logout} className="rounded-2xl">
                 <LogOut className="mr-2 h-4 w-4" />
                 Uitloggen
               </Button>
@@ -718,7 +1024,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Datum</TableHead>
+                              <TableHead>Datum/tijd</TableHead>
                               <TableHead>Naam</TableHead>
                               <TableHead className="text-right">Verandering</TableHead>
                             </TableRow>
@@ -733,7 +1039,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                             ) : (
                               transactions.map((transaction) => (
                                 <TableRow key={transaction.id}>
-                                  <TableCell>{shortDate(transaction.created_at)}</TableCell>
+                                  <TableCell>{formatDateTime(transaction.created_at)}</TableCell>
                                   <TableCell className="font-medium">{transaction.name}</TableCell>
                                   <TableCell className="text-right font-semibold">
                                     <span
@@ -882,7 +1188,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
               </Tabs>
             </Card>
           </motion.div>
-        ) : (
+        ) : activeMainTab === "rijschema" ? (
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -944,8 +1250,185 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
               </CardContent>
             </Card>
           </motion.div>
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.05 }}
+          >
+            <Card className="rounded-3xl border-0 shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-xl">Statistieken</CardTitle>
+                <p className="mt-1 text-sm text-slate-500">
+                  Overzicht van opwaarderingen en trends.
+                </p>
+              </CardHeader>
+
+              <CardContent>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card className="rounded-2xl border shadow-none">
+                    <CardContent className="space-y-3 p-5">
+                      <div className="flex items-center gap-2">
+                        <BarChart3 className="h-4 w-4 text-slate-600" />
+                        <h3 className="text-lg font-semibold">Algemeen</h3>
+                      </div>
+                      <p className="text-sm text-slate-600">
+                        Aantal opwaarderingen: <span className="font-medium text-slate-900">{statistics.positiveCount}</span>
+                      </p>
+                      <p className="text-sm text-slate-600">
+                        Totaal opgewaardeerd: <span className="font-medium text-slate-900">{euro(statistics.totalTopUps)}</span>
+                      </p>
+                      <p className="text-sm text-slate-600">
+                        Gemiddelde opwaardering: <span className="font-medium text-slate-900">{euro(statistics.averageTopUp)}</span>
+                      </p>
+                      <p className="text-sm text-slate-600">
+                        Grootste opwaardering: <span className="font-medium text-slate-900">{euro(statistics.largestTopUp)}</span>
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-2xl border shadow-none">
+                    <CardContent className="space-y-3 p-5">
+                      <h3 className="text-lg font-semibold">Kas-kanonnen</h3>
+                      {statistics.topSpenders.length === 0 ? (
+                        <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {statistics.topSpenders.map((spender, index) => (
+                            <div
+                              key={spender.userId}
+                              className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
+                            >
+                              <span className="text-sm text-slate-700">
+                                {index + 1}. {spender.name}
+                              </span>
+                              <span className="text-sm font-semibold text-slate-900">
+                                {euro(spender.total)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-2xl border shadow-none md:col-span-2">
+                    <CardContent className="space-y-3 p-5">
+                      <h3 className="text-lg font-semibold">Opwaarderingen per maand</h3>
+                      {statistics.monthlyTotals.length === 0 ? (
+                        <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {statistics.monthlyTotals.map((item) => (
+                            <div
+                              key={item.label}
+                              className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
+                            >
+                              <span className="text-sm text-slate-600">{item.label}</span>
+                              <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
         )}
       </div>
+      {isPasswordModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => {
+            if (isSavingPassword) return;
+            setIsPasswordModalOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="space-y-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">Wachtwoord wijzigen</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Vul je huidige wachtwoord in en kies daarna een nieuw wachtwoord.
+                </p>
+              </div>
+
+              <form onSubmit={changePassword} className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="current-password">Huidig wachtwoord</Label>
+                  <Input
+                    id="current-password"
+                    type="password"
+                    value={currentPasswordForChange}
+                    onChange={(e) => {
+                      setCurrentPasswordForChange(e.target.value);
+                      setPasswordMessage("");
+                    }}
+                    placeholder="Je huidige wachtwoord"
+                    className="h-11 rounded-2xl"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="new-password">Nieuw wachtwoord</Label>
+                  <Input
+                    id="new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => {
+                      setNewPassword(e.target.value);
+                      setPasswordMessage("");
+                    }}
+                    placeholder="Minimaal 8 tekens"
+                    className="h-11 rounded-2xl"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirm-new-password">Herhaal nieuw wachtwoord</Label>
+                  <Input
+                    id="confirm-new-password"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => {
+                      setConfirmPassword(e.target.value);
+                      setPasswordMessage("");
+                    }}
+                    placeholder="Herhaal je nieuwe wachtwoord"
+                    className="h-11 rounded-2xl"
+                  />
+                </div>
+
+                {passwordMessage ? (
+                  <p className="text-sm text-slate-600">{passwordMessage}</p>
+                ) : null}
+
+                <div className="space-y-2 pt-1">
+                  <Button
+                    type="submit"
+                    className="w-full rounded-2xl"
+                    disabled={isSavingPassword}
+                  >
+                    {isSavingPassword ? "Opslaan..." : "Opslaan"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full rounded-2xl"
+                    disabled={isSavingPassword}
+                    onClick={() => setIsPasswordModalOpen(false)}
+                  >
+                    Annuleren
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {selectedUser ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div
@@ -975,7 +1458,7 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                 </p>
                 <p className="text-base text-slate-700">
                   <span className="font-semibold text-slate-900">Totaal uitgegeven:</span>{" "}
-                  €0,00
+                  {euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}
                 </p>
               </div>
             </div>
@@ -1026,6 +1509,28 @@ const login = (e: React.FormEvent<HTMLFormElement>) => {
                 }`}
               >
                 Rijschema
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveMainTab("statistieken")}
+              className="flex flex-col items-center justify-center"
+            >
+              <BarChart3
+                className={`transition ${
+                  activeMainTab === "statistieken"
+                    ? "h-6 w-6 text-slate-900"
+                    : "h-5 w-5 text-slate-400"
+                }`}
+              />
+              <span
+                className={`mt-1 text-xs ${
+                  activeMainTab === "statistieken"
+                    ? "text-slate-900 font-medium"
+                    : "text-slate-400"
+                }`}
+              >
+                Statistieken
               </span>
             </button>
 
