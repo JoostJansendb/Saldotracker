@@ -304,10 +304,9 @@ export default function SaldoTrackerApp() {
   const refreshUsersPromiseRef = useRef<Promise<void> | null>(null);
   const avatarCacheRef = useRef<AvatarCacheMap>(avatarCache);
   const isFetchingAvatarsRef = useRef(false);
-  const didAuthInitTimeoutRef = useRef(false);
-  const isLoggingInRef = useRef(false);
   const liveRefreshTimeoutRef = useRef<number | null>(null);
   const pendingAvatarRefreshRef = useRef(false);
+  const isLoggedInRef = useRef(false);
 
   const mergeUserWithAvatarCache = (user: User) => ({
     ...user,
@@ -347,6 +346,7 @@ export default function SaldoTrackerApp() {
   };
 
   const resetAuthState = () => {
+    isLoggedInRef.current = false;
     setCurrentUser(null);
     setUsers([]);
     setTransactions([]);
@@ -480,16 +480,14 @@ export default function SaldoTrackerApp() {
       isFetchingAvatarsRef.current = false;
     }
   };
-  
+
   useEffect(() => {
     if (!currentUser) return;
-
     void refreshAvatarCache({ userIds: [currentUser.id] });
   }, [currentUser]);
 
   useEffect(() => {
     if (users.length === 0) return;
-
     void refreshAvatarCache({ userIds: users.map((user) => user.id) });
   }, [users]);
 
@@ -531,62 +529,13 @@ export default function SaldoTrackerApp() {
     };
   }, [isProfileMenuOpen]);
 
+  // Enkel auth systeem via onAuthStateChange — geen bootstrapSession meer
   useEffect(() => {
     let isMounted = true;
-    didAuthInitTimeoutRef.current = false;
-
-    const authLoadingFallbackTimeout = window.setTimeout(() => {
-      if (!isMounted) return;
-      didAuthInitTimeoutRef.current = true;
-      console.warn("Auth initialisatie duurde te lang, fallback naar login-scherm.");
-      resetAuthState();
-      setError("Sessie herstellen duurde te lang. Log opnieuw in.");
-      setIsAuthLoading(false);
-      void supabase.auth.signOut({ scope: "local" });
-    }, 8000);
-
-    const bootstrapSession = async () => {
-      try {
-        const { data, error: sessionError } = await supabase.auth.getUser();
-        if (!isMounted || didAuthInitTimeoutRef.current) return;
-
-        if (sessionError) {
-          console.error("Fout bij ophalen sessie:", sessionError);
-          resetAuthState();
-          return;
-        }
-
-        const authUserId = data.user?.id;
-        if (!authUserId) {
-          resetAuthState();
-          return;
-        }
-
-        const profile = await loadCurrentUser(authUserId);
-        if (!isMounted || didAuthInitTimeoutRef.current) return;
-
-        if (profile) {
-          await refreshUsers({ force: true });
-        } else {
-          await supabase.auth.signOut({ scope: "local" });
-        }
-      } catch (bootstrapError) {
-        console.error("Fout tijdens sessie-initialisatie:", bootstrapError);
-      } finally {
-        window.clearTimeout(authLoadingFallbackTimeout);
-        if (isMounted && !didAuthInitTimeoutRef.current) {
-          setIsAuthLoading(false);
-        }
-      }
-    };
-
-    void bootstrapSession();
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
       async (_event, session) => {
-        if (!isMounted || didAuthInitTimeoutRef.current) return;
-        if (_event === "INITIAL_SESSION") return;
-        if (isLoggingInRef.current) return;
+        if (!isMounted) return;
 
         if (!session?.user?.id) {
           resetAuthState();
@@ -595,11 +544,14 @@ export default function SaldoTrackerApp() {
         }
 
         const profile = await loadCurrentUser(session.user.id);
-        if (!isMounted || didAuthInitTimeoutRef.current) return;
+        if (!isMounted) return;
 
         if (profile) {
+          isLoggedInRef.current = true;
           await refreshUsers({ force: true });
           setError("");
+        } else {
+          await supabase.auth.signOut({ scope: "local" });
         }
 
         if (isMounted) {
@@ -610,20 +562,19 @@ export default function SaldoTrackerApp() {
 
     return () => {
       isMounted = false;
-      window.clearTimeout(authLoadingFallbackTimeout);
       authListener.subscription.unsubscribe();
     };
   }, []);
 
+  // Visibility/focus listeners — geregistreerd eenmalig via ref
   useEffect(() => {
-    if (!currentUser) return;
-
     const handleAppVisible = () => {
+      if (!isLoggedInRef.current) return;
       void refreshUsers();
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible" && isLoggedInRef.current) {
         void refreshUsers();
       }
     };
@@ -637,8 +588,19 @@ export default function SaldoTrackerApp() {
       window.removeEventListener("pageshow", handleAppVisible);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [currentUser]);
+  }, []);
 
+  // Polling interval als fallback voor iOS
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (!isLoggedInRef.current) return;
+      void refreshUsers({ force: true });
+    }, 60_000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  // Realtime Supabase updates
   useEffect(() => {
     if (!currentUser) return;
 
@@ -693,7 +655,6 @@ export default function SaldoTrackerApp() {
     };
   }, [currentUser]);
 
-
   const sortedUsers = useMemo(() => {
     return [...users]
       .filter((user) => user.role !== "admin")
@@ -734,18 +695,8 @@ export default function SaldoTrackerApp() {
       .slice(0, 3);
 
     const monthLabels = [
-      "jan",
-      "feb",
-      "mrt",
-      "apr",
-      "mei",
-      "jun",
-      "jul",
-      "aug",
-      "sep",
-      "okt",
-      "nov",
-      "dec",
+      "jan", "feb", "mrt", "apr", "mei", "jun",
+      "jul", "aug", "sep", "okt", "nov", "dec",
     ];
 
     const monthlyTotalsMap = new Map<
@@ -808,10 +759,9 @@ export default function SaldoTrackerApp() {
     return totals;
   }, [transactions]);
 
-const login = async (e: React.FormEvent<HTMLFormElement>) => {
+  const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setIsAuthLoading(true);
-    isLoggingInRef.current = true;
+    setError("");
 
     try {
       const normalizedUsername = username.trim();
@@ -828,7 +778,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
 
       const email = usernameToAuthEmail(safeUsername);
 
-      const { data, error: loginError } = await supabase.auth.signInWithPassword({
+      const { error: loginError } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -838,29 +788,12 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
         return;
       }
 
-      const authUserId = data.user?.id ?? data.session?.user?.id;
-      if (!authUserId) {
-        setError("Inloggen gelukt, maar er is geen gekoppeld account gevonden.");
-        return;
-      }
-
-      const profile = await loadCurrentUser(authUserId);
-      if (!profile) {
-        await supabase.auth.signOut();
-        setError("Je account is gevonden, maar niet gekoppeld aan een gebruikersprofiel.");
-        return;
-      }
-
-      await refreshUsers({ force: true });
-      setError("");
+      // onAuthStateChange handelt de rest af (SIGNED_IN event)
       setUsername("");
       setPassword("");
     } catch (loginFlowError) {
       console.error("Fout tijdens inloggen:", loginFlowError);
       setError("Inloggen mislukt door een onverwachte fout. Probeer opnieuw.");
-    } finally {
-      isLoggingInRef.current = false;
-      setIsAuthLoading(false);
     }
   };
 
@@ -870,9 +803,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
       console.error("Fout bij uitloggen:", logoutError);
     }
 
-    setCurrentUser(null);
-    setUsers([]);
-    setTransactions([]);
+    resetAuthState();
     setIsProfileMenuOpen(false);
     setIsPasswordModalOpen(false);
   };
@@ -944,7 +875,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     };
 
     reader.readAsDataURL(file);
-
     e.target.value = "";
   };
 
@@ -1050,18 +980,12 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     const parsedAmount = Number(addMoneyForm.amount.replace(",", "."));
 
     if (addMoneyForm.selectedUserIds.length === 0) {
-      setAddMoneyForm((prev) => ({
-        ...prev,
-        message: "Selecteer minstens 1 gebruiker.",
-      }));
+      setAddMoneyForm((prev) => ({ ...prev, message: "Selecteer minstens 1 gebruiker." }));
       return;
     }
 
     if (!Number.isFinite(parsedAmount)) {
-      setAddMoneyForm((prev) => ({
-        ...prev,
-        message: "Vul een geldig bedrag in.",
-      }));
+      setAddMoneyForm((prev) => ({ ...prev, message: "Vul een geldig bedrag in." }));
       return;
     }
 
@@ -1077,10 +1001,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
         .eq("id", userId);
 
       if (updateError) {
-        setAddMoneyForm((prev) => ({
-          ...prev,
-          message: "Saldo opslaan mislukt.",
-        }));
+        setAddMoneyForm((prev) => ({ ...prev, message: "Saldo opslaan mislukt." }));
         return;
       }
 
@@ -1093,10 +1014,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
         });
 
       if (transactionError) {
-        setAddMoneyForm((prev) => ({
-          ...prev,
-          message: "Transactie opslaan mislukt.",
-        }));
+        setAddMoneyForm((prev) => ({ ...prev, message: "Transactie opslaan mislukt." }));
         return;
       }
     }
@@ -1176,9 +1094,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                 </form>
 
                 <div className="mt-6 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-                  <p className="font-medium text-slate-800">Versie 1.0.9</p>
-                  <div className="mt-2 space-y-1">
-                  </div>
+                  <p className="font-medium text-slate-800">Versie 1.1.0</p>
                 </div>
               </CardContent>
             </Card>
@@ -1231,7 +1147,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                             avatar={getAvatarForUser(currentUser)}
                             className="h-14 w-14"
                           />
-
                           <div className="min-w-0 text-sm text-slate-600">
                             <p className="truncate font-medium text-slate-900">{currentUser.name}</p>
                             <p>Klik hieronder om een foto te kiezen.</p>
@@ -1254,7 +1169,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                           >
                             Foto uploaden
                           </Button>
-
                           <Button
                             type="button"
                             variant="outline"
@@ -1280,7 +1194,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                               setIsPasswordModalOpen(true);
                             }}
                           >
-                            wachtwoord wijzigen
+                            Wachtwoord wijzigen
                           </Button>
                         </div>
                       </div>
@@ -1309,6 +1223,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
             </CardContent>
           </Card>
         </motion.div>
+
         {activeMainTab === "saldo" ? (
           <motion.div
             initial={{ opacity: 0, y: 16 }}
@@ -1390,6 +1305,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                       </Table>
                     </div>
                   </TabsContent>
+
                   <TabsContent value="transacties" className="mt-0">
                     <div className="overflow-hidden rounded-2xl border bg-white">
                       <div className="max-h-[420px] overflow-y-auto">
@@ -1433,6 +1349,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                       </div>
                     </div>
                   </TabsContent>
+
                   {currentUser.role === "admin" ? (
                     <TabsContent value="toevoegen" className="mt-0">
                       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
@@ -1451,7 +1368,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                                 <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border p-3">
                                   {sortedUsers.map((user) => {
                                     const selected = addMoneyForm.selectedUserIds.includes(user.id);
-
                                     return (
                                       <button
                                         key={user.id}
@@ -1476,7 +1392,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                                             </p>
                                           </div>
                                         </div>
-
                                         <div
                                           className={`rounded-full px-3 py-1 text-xs font-semibold ${
                                             selected
@@ -1498,7 +1413,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                                   id="amount"
                                   type="number"
                                   step="0.01"
-                                  min="0"
                                   value={addMoneyForm.amount}
                                   onChange={(e) =>
                                     setAddMoneyForm((prev) => ({
@@ -1575,35 +1489,28 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                   Overzicht van uit- en thuiswedstrijden met kilometers en rijders.
                 </p>
               </CardHeader>
-
               <CardContent>
                 <div className="overflow-hidden rounded-2xl border bg-white">
                   <div className="space-y-3">
                     {rideSchedule.map((match) => {
                       const isAway = match.location.toLowerCase() === "uit";
-
                       return (
                         <div
                           key={`${match.date}-${match.team}`}
                           className={`rounded-2xl p-4 shadow-sm ${
-                            isAway ? "bg-gray-100" : "bg-white-100"
+                            isAway ? "bg-gray-100" : "bg-white"
                           }`}
                         >
                           <div className="flex items-center justify-between">
                             <p className="text-sm text-slate-500">{match.date}</p>
-                            <span className="text-sm font-medium capitalize">
-                              {match.location}
-                            </span>
+                            <span className="text-sm font-medium capitalize">{match.location}</span>
                           </div>
-
                           <h3 className="mt-1 text-base font-semibold">
                             {match.team || "Thuiswedstrijd"}
                           </h3>
-
                           <div className="mt-2 text-sm text-slate-600">
                             {match.kilometers ? `${match.kilometers} km` : "Geen kilometers"}
                           </div>
-
                           {match.riders.length > 0 && (
                             <div className="mt-3 flex flex-wrap gap-2">
                               {match.riders.map((rider) => (
@@ -1637,7 +1544,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                   Overzicht van opwaarderingen en trends.
                 </p>
               </CardHeader>
-
               <CardContent>
                 <div className="grid gap-4 md:grid-cols-2">
                   <Card className="rounded-2xl border shadow-none">
@@ -1647,16 +1553,20 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                         <h3 className="text-lg font-semibold">Algemeen</h3>
                       </div>
                       <p className="text-sm text-slate-600">
-                        Aantal opwaarderingen: <span className="font-medium text-slate-900">{statistics.positiveCount}</span>
+                        Aantal opwaarderingen:{" "}
+                        <span className="font-medium text-slate-900">{statistics.positiveCount}</span>
                       </p>
                       <p className="text-sm text-slate-600">
-                        Totaal opgewaardeerd: <span className="font-medium text-slate-900">{euro(statistics.totalTopUps)}</span>
+                        Totaal opgewaardeerd:{" "}
+                        <span className="font-medium text-slate-900">{euro(statistics.totalTopUps)}</span>
                       </p>
                       <p className="text-sm text-slate-600">
-                        Gemiddelde opwaardering: <span className="font-medium text-slate-900">{euro(statistics.averageTopUp)}</span>
+                        Gemiddelde opwaardering:{" "}
+                        <span className="font-medium text-slate-900">{euro(statistics.averageTopUp)}</span>
                       </p>
                       <p className="text-sm text-slate-600">
-                        Grootste opwaardering: <span className="font-medium text-slate-900">{euro(statistics.largestTopUp)}</span>
+                        Grootste opwaardering:{" "}
+                        <span className="font-medium text-slate-900">{euro(statistics.largestTopUp)}</span>
                       </p>
                     </CardContent>
                   </Card>
@@ -1738,6 +1648,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
           </motion.div>
         )}
       </div>
+
       {isPasswordModalOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
@@ -1829,6 +1740,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
           </div>
         </div>
       ) : null}
+
       {selectedUser ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div
@@ -1839,7 +1751,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
               <div>
                 <h2 className="text-2xl font-bold text-slate-900">{selectedUser.name}</h2>
               </div>
-
               <div className="flex justify-center">
                 <UserAvatar
                   name={selectedUser.name}
@@ -1848,7 +1759,6 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                   fallbackClassName="text-2xl"
                 />
               </div>
-
               <div className="space-y-3 rounded-2xl bg-slate-50 p-4 text-left">
                 <p className="text-base text-slate-700">
                   <span className="font-semibold text-slate-900">Huidig saldo:</span>{" "}
@@ -1863,77 +1773,64 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
           </div>
         </div>
       ) : null}
-        <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-          <div className="mx-auto grid w-full max-w-md grid-cols-3 py-3">
 
-            <button
-              onClick={() => setActiveMainTab("saldo")}
-              className="flex w-full flex-col items-center justify-center"
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+        <div className="mx-auto grid w-full max-w-md grid-cols-3 py-3">
+          <button
+            onClick={() => setActiveMainTab("saldo")}
+            className="flex w-full flex-col items-center justify-center"
+          >
+            <Wallet
+              className={`transition ${
+                activeMainTab === "saldo" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"
+              }`}
+            />
+            <span
+              className={`mt-1 text-xs ${
+                activeMainTab === "saldo" ? "text-slate-900 font-medium" : "text-slate-400"
+              }`}
             >
-              <Wallet
-                className={`transition ${
-                  activeMainTab === "saldo"
-                    ? "h-6 w-6 text-slate-900"
-                    : "h-5 w-5 text-slate-400"
-                }`}
-              />
-              <span
-                className={`mt-1 text-xs ${
-                  activeMainTab === "saldo"
-                    ? "text-slate-900 font-medium"
-                    : "text-slate-400"
-                }`}
-              >
-                Saldo
-              </span>
-            </button>
+              Saldo
+            </span>
+          </button>
 
-            <button
-              onClick={() => setActiveMainTab("rijschema")}
-              className="flex w-full flex-col items-center justify-center"
+          <button
+            onClick={() => setActiveMainTab("rijschema")}
+            className="flex w-full flex-col items-center justify-center"
+          >
+            <Car
+              className={`transition ${
+                activeMainTab === "rijschema" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"
+              }`}
+            />
+            <span
+              className={`mt-1 text-xs ${
+                activeMainTab === "rijschema" ? "text-slate-900 font-medium" : "text-slate-400"
+              }`}
             >
-              <Car
-                className={`transition ${
-                  activeMainTab === "rijschema"
-                    ? "h-6 w-6 text-slate-900"
-                    : "h-5 w-5 text-slate-400"
-                }`}
-              />
-              <span
-                className={`mt-1 text-xs ${
-                  activeMainTab === "rijschema"
-                    ? "text-slate-900 font-medium"
-                    : "text-slate-400"
-                }`}
-              >
-                Rijschema
-              </span>
-            </button>
+              Rijschema
+            </span>
+          </button>
 
-            <button
-              onClick={() => setActiveMainTab("statistieken")}
-              className="flex w-full flex-col items-center justify-center"
+          <button
+            onClick={() => setActiveMainTab("statistieken")}
+            className="flex w-full flex-col items-center justify-center"
+          >
+            <BarChart3
+              className={`transition ${
+                activeMainTab === "statistieken" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"
+              }`}
+            />
+            <span
+              className={`mt-1 text-xs ${
+                activeMainTab === "statistieken" ? "text-slate-900 font-medium" : "text-slate-400"
+              }`}
             >
-              <BarChart3
-                className={`transition ${
-                  activeMainTab === "statistieken"
-                    ? "h-6 w-6 text-slate-900"
-                    : "h-5 w-5 text-slate-400"
-                }`}
-              />
-              <span
-                className={`mt-1 text-xs ${
-                  activeMainTab === "statistieken"
-                    ? "text-slate-900 font-medium"
-                    : "text-slate-400"
-                }`}
-              >
-                Statistieken
-              </span>
-            </button>
-
-          </div>
+              Statistieken
+            </span>
+          </button>
         </div>
+      </div>
     </div>
   );
 }
