@@ -509,6 +509,11 @@ export default function SaldoTrackerApp() {
 
   useEffect(() => {
     let isMounted = true;
+    const authLoadingFallbackTimeout = window.setTimeout(() => {
+      if (!isMounted) return;
+      console.warn("Auth initialisatie duurde te lang, fallback naar login-scherm.");
+      setIsAuthLoading(false);
+    }, 3000);
 
     const bootstrapSession = async () => {
       try {
@@ -536,6 +541,7 @@ export default function SaldoTrackerApp() {
       } catch (bootstrapError) {
         console.error("Fout tijdens sessie-initialisatie:", bootstrapError);
       } finally {
+        window.clearTimeout(authLoadingFallbackTimeout);
         if (isMounted) {
           setIsAuthLoading(false);
         }
@@ -569,6 +575,7 @@ export default function SaldoTrackerApp() {
 
     return () => {
       isMounted = false;
+      window.clearTimeout(authLoadingFallbackTimeout);
       authListener.subscription.unsubscribe();
     };
   }, []);
