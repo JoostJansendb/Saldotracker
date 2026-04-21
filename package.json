@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "auth:import-users": "node scripts/import-users-to-auth.mjs",
-    "auth:sync-uuids": "node scripts/sync-user-uuids-from-auth.mjs"
+    "auth:sync-uuids": "node scripts/sync-user-uuids-from-auth.mjs",
+    "avatars:migrate-storage": "node scripts/migrate-avatars-to-storage.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.3",

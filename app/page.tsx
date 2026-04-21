@@ -12,7 +12,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
-import { RefreshCw } from "lucide-react";
 
 type User = {
   id: string;
@@ -44,6 +43,8 @@ type Transaction = {
   name: string;
   amount_change: number;
 };
+
+type AvatarCacheMap = Record<string, string>;
 
 const rideSchedule: RideScheduleItem[] = [
   {
@@ -157,6 +158,7 @@ function getInitials(name: string) {
 }
 
 const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.local";
+const avatarBucket = process.env.NEXT_PUBLIC_SUPABASE_AVATAR_BUCKET ?? "avatars";
 
 function sanitizeUsername(username: string) {
   return username
@@ -173,20 +175,93 @@ function usernameToAuthEmail(username: string) {
   return `${safe}@${authEmailDomain}`;
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+async function resizeAvatar(dataUrl: string) {
+  const image = new Image();
+  image.src = dataUrl;
+
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Avatar afbeelding kon niet worden geladen."));
   });
 
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+  const maxSize = 160;
+  const scale = Math.min(maxSize / image.width, maxSize / image.height, 1);
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return dataUrl;
   }
+
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/webp", 0.78);
 }
 
+async function dataUrlToBlob(dataUrl: string) {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+function isExternalAvatarUrl(value: string) {
+  return /^https?:\/\//.test(value);
+}
+
+function isDataUrlAvatar(value: string) {
+  return value.startsWith("data:image/");
+}
+
+function isStorageAvatarPath(value: string) {
+  return Boolean(value) && !isExternalAvatarUrl(value) && !isDataUrlAvatar(value);
+}
+
+function avatarValueToSrc(value: string) {
+  if (!value) return "";
+  if (isExternalAvatarUrl(value) || isDataUrlAvatar(value)) return value;
+
+  return supabase.storage.from(avatarBucket).getPublicUrl(value).data.publicUrl;
+}
+
+function buildAvatarObjectPath(userId: string) {
+  return `users/${userId}/avatar-${Date.now()}.webp`;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
+const UserAvatar = React.memo(function UserAvatar({
+  name,
+  avatar,
+  className,
+  fallbackClassName,
+}: {
+  name: string;
+  avatar: string;
+  className?: string;
+  fallbackClassName?: string;
+}) {
+  return (
+    <Avatar className={className}>
+      {avatar ? (
+        <AvatarImage
+          src={avatar}
+          alt={name}
+          loading="lazy"
+          decoding="async"
+        />
+      ) : null}
+      <AvatarFallback className={fallbackClassName}>{getInitials(name)}</AvatarFallback>
+    </Avatar>
+  );
+});
+
 export default function SaldoTrackerApp() {
+  const [avatarCache, setAvatarCache] = useState<AvatarCacheMap>({});
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [username, setUsername] = useState("");
@@ -212,6 +287,47 @@ export default function SaldoTrackerApp() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const userModalRef = useRef<HTMLDivElement | null>(null);
+  const lastUsersRefreshAtRef = useRef(0);
+  const refreshUsersPromiseRef = useRef<Promise<void> | null>(null);
+  const avatarCacheRef = useRef<AvatarCacheMap>(avatarCache);
+  const isFetchingAvatarsRef = useRef(false);
+
+  const mergeUserWithAvatarCache = (user: User) => ({
+    ...user,
+    avatar: user.avatar || avatarCacheRef.current[user.id] || "",
+  });
+
+  const getAvatarForUser = (user: Pick<User, "id" | "avatar">) =>
+    avatarCache[user.id] || avatarValueToSrc(user.avatar);
+
+  const setAvatarCacheEntries = (entries: AvatarCacheMap) => {
+    const nextCache = { ...avatarCacheRef.current, ...entries };
+    avatarCacheRef.current = nextCache;
+    setAvatarCache(nextCache);
+  };
+
+  const updateAvatarCacheForUser = (userId: string, avatarValue: string) => {
+    const nextCache = { ...avatarCacheRef.current };
+    const avatarSrc = avatarValueToSrc(avatarValue);
+
+    if (avatarSrc) {
+      nextCache[userId] = avatarSrc;
+    } else {
+      delete nextCache[userId];
+    }
+
+    avatarCacheRef.current = nextCache;
+    setAvatarCache(nextCache);
+  };
+
+  const removeAvatarObject = async (avatarValue: string) => {
+    if (!isStorageAvatarPath(avatarValue)) return;
+
+    const { error } = await supabase.storage.from(avatarBucket).remove([avatarValue]);
+    if (error) {
+      console.error("Fout bij verwijderen avatarbestand:", error);
+    }
+  };
 
   const loadCurrentUser = async (userId: string) => {
     const { data, error: currentUserError } = await supabase
@@ -230,35 +346,129 @@ export default function SaldoTrackerApp() {
       return null;
     }
 
-    setCurrentUser(data);
-    return data;
+    const userWithAvatar = mergeUserWithAvatarCache(data);
+    setCurrentUser(userWithAvatar);
+
+    if (data.avatar) {
+      updateAvatarCacheForUser(data.id, data.avatar);
+    }
+
+    return userWithAvatar;
   };
 
-  const refreshUsers = async () => {
-    const { data, error } = await supabase
-      .from("users")
-      .select("id, username, name, role, balance, avatar");
-
-    if (error) {
-      console.error("Fout bij verversen users:", error);
-      return;
+  const refreshUsers = async ({
+    force = false,
+    minIntervalMs = 15000,
+  }: {
+    force?: boolean;
+    minIntervalMs?: number;
+  } = {}) => {
+    const now = Date.now();
+    if (!force && now - lastUsersRefreshAtRef.current < minIntervalMs) {
+      return refreshUsersPromiseRef.current ?? Promise.resolve();
     }
 
-    if (data) setUsers(data);
-
-    const { data: transactionData, error: transactionError } = await supabase
-      .from("transactions")
-      .select("id, created_at, user_id, name, amount_change")
-      .order("created_at", { ascending: false });
-
-    if (transactionError) {
-      console.error("Fout bij ophalen transacties:", transactionError);
-      return;
+    if (refreshUsersPromiseRef.current) {
+      return refreshUsersPromiseRef.current;
     }
 
-    if (transactionData) setTransactions(transactionData);
+    const refreshPromise = (async () => {
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, username, name, role, balance");
+
+      if (error) {
+        console.error("Fout bij verversen users:", error);
+        return;
+      }
+
+      if (data) {
+        setUsers(data.map((user) => mergeUserWithAvatarCache({ ...user, avatar: "" })));
+      }
+
+      const { data: transactionData, error: transactionError } = await supabase
+        .from("transactions")
+        .select("id, created_at, user_id, name, amount_change")
+        .order("created_at", { ascending: false });
+
+      if (transactionError) {
+        console.error("Fout bij ophalen transacties:", transactionError);
+        return;
+      }
+
+      if (transactionData) setTransactions(transactionData);
+      lastUsersRefreshAtRef.current = Date.now();
+    })();
+
+    refreshUsersPromiseRef.current = refreshPromise;
+
+    try {
+      await refreshPromise;
+    } finally {
+      refreshUsersPromiseRef.current = null;
+    }
+  };
+
+  const refreshAvatarCache = async ({
+    userIds,
+    force = false,
+  }: {
+    userIds?: string[];
+    force?: boolean;
+  } = {}) => {
+    if (isFetchingAvatarsRef.current) return;
+
+    const targetUserIds =
+      userIds?.filter(isDefined) ??
+      Array.from(new Set([currentUser?.id, ...users.map((user) => user.id)].filter(isDefined)));
+
+    if (targetUserIds.length === 0) return;
+
+    const missingUserIds = force
+      ? targetUserIds
+      : targetUserIds.filter((userId) => !(userId in avatarCacheRef.current));
+
+    if (missingUserIds.length === 0) return;
+
+    isFetchingAvatarsRef.current = true;
+
+    try {
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, avatar")
+        .in("id", missingUserIds);
+
+      if (error) {
+        console.error("Fout bij ophalen avatars:", error);
+        return;
+      }
+
+      const nextCache = (data ?? []).reduce<AvatarCacheMap>((acc, user) => {
+        if (user.avatar) {
+          acc[user.id] = avatarValueToSrc(user.avatar);
+        }
+
+        return acc;
+      }, {});
+
+      setAvatarCacheEntries(nextCache);
+    } finally {
+      isFetchingAvatarsRef.current = false;
+    }
   };
   
+  useEffect(() => {
+    if (!currentUser) return;
+
+    void refreshAvatarCache({ userIds: [currentUser.id] });
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (users.length === 0) return;
+
+    void refreshAvatarCache({ userIds: users.map((user) => user.id) });
+  }, [users]);
+
   useEffect(() => {
     function handleClickOutsideModal(event: MouseEvent) {
       if (
@@ -302,11 +512,7 @@ export default function SaldoTrackerApp() {
 
     const bootstrapSession = async () => {
       try {
-        const { data, error: sessionError } = await withTimeout(
-          supabase.auth.getSession(),
-          8000,
-          "getSession"
-        );
+        const { data, error: sessionError } = await supabase.auth.getSession();
 
         if (sessionError) {
           console.error("Fout bij ophalen sessie:", sessionError);
@@ -321,9 +527,9 @@ export default function SaldoTrackerApp() {
           return;
         }
 
-        const profile = await withTimeout(loadCurrentUser(authUserId), 8000, "loadCurrentUser");
+        const profile = await loadCurrentUser(authUserId);
         if (profile) {
-          void refreshUsers();
+          await refreshUsers({ force: true });
         } else {
           await supabase.auth.signOut();
         }
@@ -351,7 +557,7 @@ export default function SaldoTrackerApp() {
 
         const profile = await loadCurrentUser(session.user.id);
         if (profile) {
-          await refreshUsers();
+          await refreshUsers({ force: true });
           setError("");
         }
 
@@ -554,6 +760,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
   const updateCurrentUserAvatar = async (avatar: string) => {
     if (!currentUser) return;
 
+    const previousAvatar = currentUser.avatar;
     const { error } = await supabase
       .from("users")
       .update({ avatar })
@@ -571,9 +778,17 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     );
 
     setCurrentUser((prev) => (prev ? { ...prev, avatar } : prev));
+    setSelectedUser((prev) => (prev?.id === currentUser.id ? { ...prev, avatar } : prev));
+    updateAvatarCacheForUser(currentUser.id, avatar);
+
+    if (previousAvatar && previousAvatar !== avatar) {
+      await removeAvatarObject(previousAvatar);
+    }
   };
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!currentUser) return;
+
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -582,7 +797,28 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     reader.onload = async () => {
       const result = reader.result;
       if (typeof result === "string") {
-        await updateCurrentUserAvatar(result);
+        const resizedAvatar = await resizeAvatar(result);
+        const avatarBlob = await dataUrlToBlob(resizedAvatar);
+        const avatarPath = buildAvatarObjectPath(currentUser.id);
+        const { error: uploadError } = await supabase.storage
+          .from(avatarBucket)
+          .upload(avatarPath, avatarBlob, {
+            contentType: "image/webp",
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.error("Fout bij uploaden avatar:", uploadError);
+          return;
+        }
+
+        try {
+          await updateCurrentUserAvatar(avatarPath);
+        } catch (updateError) {
+          await removeAvatarObject(avatarPath);
+          throw updateError;
+        }
+
         setIsProfileMenuOpen(false);
       }
     };
@@ -594,6 +830,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
 
   const removeAvatar = async () => {
     if (!currentUser) return;
+    const previousAvatar = currentUser.avatar;
 
     const { error } = await supabase
       .from("users")
@@ -612,6 +849,9 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     );
 
     setCurrentUser((prev) => (prev ? { ...prev, avatar: "" } : prev));
+    setSelectedUser((prev) => (prev?.id === currentUser.id ? { ...prev, avatar: "" } : prev));
+    updateAvatarCacheForUser(currentUser.id, "");
+    await removeAvatarObject(previousAvatar);
     setIsProfileMenuOpen(false);
   };
 
@@ -750,20 +990,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     });
   };
 
-  if (isAuthLoading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 p-4 md:p-8">
-        <div className="mx-auto flex min-h-[85vh] max-w-md items-center justify-center">
-          <Card className="w-full rounded-3xl border-0 shadow-xl">
-            <CardContent className="flex items-center justify-center gap-3 py-12 text-slate-600">
-              <RefreshCw className="h-5 w-5 animate-spin" />
-              <span>Sessie controleren...</span>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    );
-  }
+  if (isAuthLoading) return null;
 
   if (!currentUser) {
     return (
@@ -852,12 +1079,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                     onClick={() => setIsProfileMenuOpen((prev) => !prev)}
                     className="rounded-full"
                   >
-                    <Avatar className="h-12 w-12 ring-2 ring-white shadow">
-                      {currentUser.avatar ? (
-                        <AvatarImage src={currentUser.avatar} alt={currentUser.name} />
-                      ) : null}
-                      <AvatarFallback>{getInitials(currentUser.name)}</AvatarFallback>
-                    </Avatar>
+                    <UserAvatar
+                      name={currentUser.name}
+                      avatar={getAvatarForUser(currentUser)}
+                      className="h-12 w-12 ring-2 ring-white shadow"
+                    />
                   </button>
 
                   {isProfileMenuOpen ? (
@@ -874,12 +1100,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                         </div>
 
                         <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
-                          <Avatar className="h-14 w-14">
-                            {currentUser.avatar ? (
-                              <AvatarImage src={currentUser.avatar} alt={currentUser.name} />
-                            ) : null}
-                            <AvatarFallback>{getInitials(currentUser.name)}</AvatarFallback>
-                          </Avatar>
+                          <UserAvatar
+                            name={currentUser.name}
+                            avatar={getAvatarForUser(currentUser)}
+                            className="h-14 w-14"
+                          />
 
                           <div className="min-w-0 text-sm text-slate-600">
                             <p className="truncate font-medium text-slate-900">{currentUser.name}</p>
@@ -1016,10 +1241,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                                   onClick={() => setSelectedUser(user)}
                                   className="rounded-full"
                                 >
-                                  <Avatar className="h-11 w-11 cursor-pointer transition hover:scale-105">
-                                    {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
-                                    <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
-                                  </Avatar>
+                                  <UserAvatar
+                                    name={user.name}
+                                    avatar={getAvatarForUser(user)}
+                                    className="h-11 w-11 cursor-pointer transition hover:scale-105"
+                                  />
                                 </button>
                               </TableCell>
                               <TableCell className="font-medium">{user.name}</TableCell>
@@ -1108,10 +1334,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                                         }`}
                                       >
                                         <div className="flex items-center gap-3">
-                                          <Avatar className="h-10 w-10">
-                                            {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
-                                            <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
-                                          </Avatar>
+                                          <UserAvatar
+                                            name={user.name}
+                                            avatar={getAvatarForUser(user)}
+                                            className="h-10 w-10"
+                                          />
                                           <div>
                                             <p className="font-medium">{user.name}</p>
                                             <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>
@@ -1184,10 +1411,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                                       className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-3"
                                     >
                                       <div className="flex items-center gap-3">
-                                        <Avatar className="h-9 w-9">
-                                          {user.avatar ? <AvatarImage src={user.avatar} alt={user.name} /> : null}
-                                          <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
-                                        </Avatar>
+                                        <UserAvatar
+                                          name={user.name}
+                                          avatar={getAvatarForUser(user)}
+                                          className="h-9 w-9"
+                                        />
                                         <span className="font-medium">{user.name}</span>
                                       </div>
                                       <span className="text-sm text-slate-500">{euro(user.balance)}</span>
@@ -1483,14 +1711,12 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
               </div>
 
               <div className="flex justify-center">
-                <Avatar className="h-56 w-56 ring-4 ring-slate-100">
-                  {selectedUser.avatar ? (
-                    <AvatarImage src={selectedUser.avatar} alt={selectedUser.name} />
-                  ) : null}
-                  <AvatarFallback className="text-2xl">
-                    {getInitials(selectedUser.name)}
-                  </AvatarFallback>
-                </Avatar>
+                <UserAvatar
+                  name={selectedUser.name}
+                  avatar={getAvatarForUser(selectedUser)}
+                  className="h-56 w-56 ring-4 ring-slate-100"
+                  fallbackClassName="text-2xl"
+                />
               </div>
 
               <div className="space-y-3 rounded-2xl bg-slate-50 p-4 text-left">
