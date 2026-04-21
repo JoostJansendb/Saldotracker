@@ -149,15 +149,15 @@ function formatDate(dateString: string) {
 }
 
 function formatDateTime(dateString: string) {
-  return new Intl.DateTimeFormat("nl-NL", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(dateString));
+  const date = new Date(dateString);
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear()).slice(-2);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+
+  return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
 }
 
 function getInitials(name: string) {
@@ -286,6 +286,7 @@ export default function SaldoTrackerApp() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
+  const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({
     selectedUserIds: [],
     amount: "",
@@ -309,6 +310,7 @@ export default function SaldoTrackerApp() {
   const liveRefreshTimeoutRef = useRef<number | null>(null);
   const pendingAvatarRefreshRef = useRef(false);
   const isLoggedInRef = useRef(false);
+  const lastNavigationRefreshAtRef = useRef(0);
 
   const mergeUserWithAvatarCache = (user: User) => ({
     ...user,
@@ -569,39 +571,6 @@ export default function SaldoTrackerApp() {
   }, []);
 
   // Visibility/focus listeners — geregistreerd eenmalig via ref
-  useEffect(() => {
-    const handleAppVisible = () => {
-      if (!isLoggedInRef.current) return;
-      void refreshUsers();
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && isLoggedInRef.current) {
-        void refreshUsers();
-      }
-    };
-
-    window.addEventListener("focus", handleAppVisible);
-    window.addEventListener("pageshow", handleAppVisible);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("focus", handleAppVisible);
-      window.removeEventListener("pageshow", handleAppVisible);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
-
-  // Polling interval als fallback voor iOS
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (!isLoggedInRef.current) return;
-      void refreshUsers({ force: true });
-    }, 60_000);
-
-    return () => window.clearInterval(interval);
-  }, []);
-
   // Realtime Supabase updates
   useEffect(() => {
     if (!currentUser) return;
@@ -796,6 +765,31 @@ export default function SaldoTrackerApp() {
     } catch (loginFlowError) {
       console.error("Fout tijdens inloggen:", loginFlowError);
       setError("Inloggen mislukt door een onverwachte fout. Probeer opnieuw.");
+    }
+  };
+
+  const handleSaldoTabChange = (value: string) => {
+    const nextTab = value as "overzicht" | "transacties" | "toevoegen";
+    setActiveSaldoTab(nextTab);
+
+    if (nextTab === "overzicht" || nextTab === "transacties") {
+      const now = Date.now();
+      if (now - lastNavigationRefreshAtRef.current >= 15_000) {
+        lastNavigationRefreshAtRef.current = now;
+        void refreshUsers({ force: true });
+      }
+    }
+  };
+
+  const handleMainTabChange = (nextTab: "saldo" | "rijschema" | "statistieken") => {
+    setActiveMainTab(nextTab);
+
+    if (nextTab === "saldo" || nextTab === "statistieken") {
+      const now = Date.now();
+      if (now - lastNavigationRefreshAtRef.current >= 15_000) {
+        lastNavigationRefreshAtRef.current = now;
+        void refreshUsers({ force: true });
+      }
     }
   };
 
@@ -1233,7 +1227,7 @@ export default function SaldoTrackerApp() {
             transition={{ duration: 0.35, delay: 0.05 }}
           >
             <Card className="rounded-3xl border-0 shadow-sm">
-              <Tabs defaultValue="overzicht" className="w-full">
+              <Tabs value={activeSaldoTab} onValueChange={handleSaldoTabChange} className="w-full">
                 <CardHeader className="pb-3">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
@@ -1779,7 +1773,7 @@ export default function SaldoTrackerApp() {
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
         <div className="mx-auto grid w-full max-w-md grid-cols-3 py-3">
           <button
-            onClick={() => setActiveMainTab("saldo")}
+            onClick={() => handleMainTabChange("saldo")}
             className="flex w-full flex-col items-center justify-center"
           >
             <Wallet
@@ -1797,7 +1791,7 @@ export default function SaldoTrackerApp() {
           </button>
 
           <button
-            onClick={() => setActiveMainTab("rijschema")}
+            onClick={() => handleMainTabChange("rijschema")}
             className="flex w-full flex-col items-center justify-center"
           >
             <Car
@@ -1815,7 +1809,7 @@ export default function SaldoTrackerApp() {
           </button>
 
           <button
-            onClick={() => setActiveMainTab("statistieken")}
+            onClick={() => handleMainTabChange("statistieken")}
             className="flex w-full flex-col items-center justify-center"
           >
             <BarChart3
