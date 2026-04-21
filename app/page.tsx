@@ -196,7 +196,7 @@ async function resizeAvatar(dataUrl: string) {
     image.onerror = () => reject(new Error("Avatar afbeelding kon niet worden geladen."));
   });
 
-  const maxSize = 160;
+  const maxSize = 256;
   const scale = Math.min(maxSize / image.width, maxSize / image.height, 1);
   const width = Math.max(1, Math.round(image.width * scale));
   const height = Math.max(1, Math.round(image.height * scale));
@@ -304,6 +304,9 @@ export default function SaldoTrackerApp() {
   const refreshUsersPromiseRef = useRef<Promise<void> | null>(null);
   const avatarCacheRef = useRef<AvatarCacheMap>(avatarCache);
   const isFetchingAvatarsRef = useRef(false);
+  const didAuthInitTimeoutRef = useRef(false);
+  const liveRefreshTimeoutRef = useRef<number | null>(null);
+  const pendingAvatarRefreshRef = useRef(false);
 
   const mergeUserWithAvatarCache = (user: User) => ({
     ...user,
@@ -340,6 +343,12 @@ export default function SaldoTrackerApp() {
     if (error) {
       console.error("Fout bij verwijderen avatarbestand:", error);
     }
+  };
+
+  const resetAuthState = () => {
+    setCurrentUser(null);
+    setUsers([]);
+    setTransactions([]);
   };
 
   const loadCurrentUser = async (userId: string) => {
@@ -523,15 +532,22 @@ export default function SaldoTrackerApp() {
 
   useEffect(() => {
     let isMounted = true;
+    didAuthInitTimeoutRef.current = false;
+
     const authLoadingFallbackTimeout = window.setTimeout(() => {
       if (!isMounted) return;
+      didAuthInitTimeoutRef.current = true;
       console.warn("Auth initialisatie duurde te lang, fallback naar login-scherm.");
+      resetAuthState();
+      setError("Sessie herstellen duurde te lang. Log opnieuw in.");
       setIsAuthLoading(false);
-    }, 3000);
+      void supabase.auth.signOut({ scope: "local" });
+    }, 8000);
 
     const bootstrapSession = async () => {
       try {
         const { data, error: sessionError } = await supabase.auth.getSession();
+        if (!isMounted || didAuthInitTimeoutRef.current) return;
 
         if (sessionError) {
           console.error("Fout bij ophalen sessie:", sessionError);
@@ -539,24 +555,23 @@ export default function SaldoTrackerApp() {
 
         const authUserId = data.session?.user.id;
         if (!authUserId) {
-          if (!isMounted) return;
-          setCurrentUser(null);
-          setUsers([]);
-          setTransactions([]);
+          resetAuthState();
           return;
         }
 
         const profile = await loadCurrentUser(authUserId);
+        if (!isMounted || didAuthInitTimeoutRef.current) return;
+
         if (profile) {
           await refreshUsers({ force: true });
         } else {
-          await supabase.auth.signOut();
+          await supabase.auth.signOut({ scope: "local" });
         }
       } catch (bootstrapError) {
         console.error("Fout tijdens sessie-initialisatie:", bootstrapError);
       } finally {
         window.clearTimeout(authLoadingFallbackTimeout);
-        if (isMounted) {
+        if (isMounted && !didAuthInitTimeoutRef.current) {
           setIsAuthLoading(false);
         }
       }
@@ -566,16 +581,18 @@ export default function SaldoTrackerApp() {
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
       async (_event, session) => {
+        if (!isMounted || didAuthInitTimeoutRef.current) return;
+        if (_event === "INITIAL_SESSION") return;
+
         if (!session?.user?.id) {
-          if (!isMounted) return;
-          setCurrentUser(null);
-          setUsers([]);
-          setTransactions([]);
+          resetAuthState();
           setIsAuthLoading(false);
           return;
         }
 
         const profile = await loadCurrentUser(session.user.id);
+        if (!isMounted || didAuthInitTimeoutRef.current) return;
+
         if (profile) {
           await refreshUsers({ force: true });
           setError("");
@@ -615,6 +632,60 @@ export default function SaldoTrackerApp() {
       window.removeEventListener("focus", handleAppVisible);
       window.removeEventListener("pageshow", handleAppVisible);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const scheduleRealtimeRefresh = (includeAvatars = false) => {
+      if (includeAvatars) {
+        pendingAvatarRefreshRef.current = true;
+      }
+
+      if (liveRefreshTimeoutRef.current) {
+        window.clearTimeout(liveRefreshTimeoutRef.current);
+      }
+
+      liveRefreshTimeoutRef.current = window.setTimeout(async () => {
+        const shouldRefreshAvatars = pendingAvatarRefreshRef.current;
+        pendingAvatarRefreshRef.current = false;
+        liveRefreshTimeoutRef.current = null;
+
+        await refreshUsers({ force: true });
+        if (shouldRefreshAvatars) {
+          await refreshAvatarCache({ force: true });
+        }
+      }, 300);
+    };
+
+    const channel = supabase
+      .channel(`saldo-live-${currentUser.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "users" },
+        () => {
+          scheduleRealtimeRefresh(true);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "transactions" },
+        () => {
+          scheduleRealtimeRefresh(false);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      pendingAvatarRefreshRef.current = false;
+
+      if (liveRefreshTimeoutRef.current) {
+        window.clearTimeout(liveRefreshTimeoutRef.current);
+        liveRefreshTimeoutRef.current = null;
+      }
+
+      void supabase.removeChannel(channel);
     };
   }, [currentUser]);
 
@@ -1033,7 +1104,13 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     });
   };
 
-  if (isAuthLoading) return null;
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 flex items-center justify-center">
+        <div className="text-sm text-slate-500">Laden...</div>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return (
