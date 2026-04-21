@@ -547,14 +547,16 @@ export default function SaldoTrackerApp() {
 
     const bootstrapSession = async () => {
       try {
-        const { data, error: sessionError } = await supabase.auth.getSession();
+        const { data, error: sessionError } = await supabase.auth.getUser();
         if (!isMounted || didAuthInitTimeoutRef.current) return;
 
         if (sessionError) {
           console.error("Fout bij ophalen sessie:", sessionError);
+          resetAuthState();
+          return;
         }
 
-        const authUserId = data.session?.user.id;
+        const authUserId = data.user?.id;
         if (!authUserId) {
           resetAuthState();
           return;
