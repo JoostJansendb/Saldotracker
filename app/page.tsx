@@ -737,53 +737,54 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsAuthLoading(true);
 
-    const normalizedUsername = username.trim();
-    if (!normalizedUsername || !password.trim()) {
+    try {
+      const normalizedUsername = username.trim();
+      if (!normalizedUsername || !password.trim()) {
+        setError("Vul gebruikersnaam en wachtwoord in.");
+        return;
+      }
+
+      const safeUsername = sanitizeUsername(normalizedUsername);
+      if (!safeUsername) {
+        setError("Vul een geldige gebruikersnaam in.");
+        return;
+      }
+
+      const email = usernameToAuthEmail(safeUsername);
+
+      const { data, error: loginError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (loginError) {
+        setError("Onjuiste gebruikersnaam of wachtwoord.");
+        return;
+      }
+
+      const authUserId = data.user?.id ?? data.session?.user?.id;
+      if (!authUserId) {
+        setError("Inloggen gelukt, maar er is geen gekoppeld account gevonden.");
+        return;
+      }
+
+      const profile = await loadCurrentUser(authUserId);
+      if (!profile) {
+        await supabase.auth.signOut();
+        setError("Je account is gevonden, maar niet gekoppeld aan een gebruikersprofiel.");
+        return;
+      }
+
+      await refreshUsers({ force: true });
+      setError("");
+      setUsername("");
+      setPassword("");
+    } catch (loginFlowError) {
+      console.error("Fout tijdens inloggen:", loginFlowError);
+      setError("Inloggen mislukt door een onverwachte fout. Probeer opnieuw.");
+    } finally {
       setIsAuthLoading(false);
-      setError("Vul gebruikersnaam en wachtwoord in.");
-      return;
     }
-
-    const safeUsername = sanitizeUsername(normalizedUsername);
-    if (!safeUsername) {
-      setIsAuthLoading(false);
-      setError("Vul een geldige gebruikersnaam in.");
-      return;
-    }
-
-    const email = usernameToAuthEmail(safeUsername);
-
-    const { data, error: loginError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (loginError) {
-      setIsAuthLoading(false);
-      setError("Onjuiste gebruikersnaam of wachtwoord.");
-      return;
-    }
-
-    const authUserId = data.user?.id ?? data.session?.user?.id;
-    if (!authUserId) {
-      setIsAuthLoading(false);
-      setError("Inloggen gelukt, maar er is geen gekoppeld account gevonden.");
-      return;
-    }
-
-    const profile = await loadCurrentUser(authUserId);
-    if (!profile) {
-      await supabase.auth.signOut();
-      setIsAuthLoading(false);
-      setError("Je account is gevonden, maar niet gekoppeld aan een gebruikersprofiel.");
-      return;
-    }
-
-    await refreshUsers({ force: true });
-    setError("");
-    setUsername("");
-    setPassword("");
-    setIsAuthLoading(false);
   };
 
   const logout = async () => {
@@ -1211,7 +1212,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                     </Badge>
                     {lastDataRefreshAt ? (
                       <span className="text-sm text-slate-500">
-                        Laatst ververst: {formatDateTime(lastDataRefreshAt)}
+                        Bijgewerkt: {formatDateTime(lastDataRefreshAt)}
                       </span>
                     ) : null}
                   </div>
