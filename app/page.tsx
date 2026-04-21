@@ -305,6 +305,7 @@ export default function SaldoTrackerApp() {
   const avatarCacheRef = useRef<AvatarCacheMap>(avatarCache);
   const isFetchingAvatarsRef = useRef(false);
   const didAuthInitTimeoutRef = useRef(false);
+  const isLoggingInRef = useRef(false);
   const liveRefreshTimeoutRef = useRef<number | null>(null);
   const pendingAvatarRefreshRef = useRef(false);
 
@@ -583,6 +584,7 @@ export default function SaldoTrackerApp() {
       async (_event, session) => {
         if (!isMounted || didAuthInitTimeoutRef.current) return;
         if (_event === "INITIAL_SESSION") return;
+        if (isLoggingInRef.current) return;
 
         if (!session?.user?.id) {
           resetAuthState();
@@ -807,6 +809,7 @@ export default function SaldoTrackerApp() {
 const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsAuthLoading(true);
+    isLoggingInRef.current = true;
 
     try {
       const normalizedUsername = username.trim();
@@ -854,6 +857,7 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
       console.error("Fout tijdens inloggen:", loginFlowError);
       setError("Inloggen mislukt door een onverwachte fout. Probeer opnieuw.");
     } finally {
+      isLoggingInRef.current = false;
       setIsAuthLoading(false);
     }
   };
