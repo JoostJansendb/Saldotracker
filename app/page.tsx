@@ -148,6 +148,18 @@ function formatDate(dateString: string) {
   return `${dd}/${mm}/${yy}`;
 }
 
+function formatDateTime(dateString: string) {
+  return new Intl.DateTimeFormat("nl-NL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(dateString));
+}
+
 function getInitials(name: string) {
   return name
     .split(" ")
@@ -267,6 +279,7 @@ export default function SaldoTrackerApp() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [lastDataRefreshAt, setLastDataRefreshAt] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -398,6 +411,7 @@ export default function SaldoTrackerApp() {
 
       if (transactionData) setTransactions(transactionData);
       lastUsersRefreshAtRef.current = Date.now();
+      setLastDataRefreshAt(new Date().toISOString());
     })();
 
     refreshUsersPromiseRef.current = refreshPromise;
@@ -721,34 +735,55 @@ export default function SaldoTrackerApp() {
 
 const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setIsAuthLoading(true);
 
     const normalizedUsername = username.trim();
     if (!normalizedUsername || !password.trim()) {
+      setIsAuthLoading(false);
       setError("Vul gebruikersnaam en wachtwoord in.");
       return;
     }
 
     const safeUsername = sanitizeUsername(normalizedUsername);
     if (!safeUsername) {
+      setIsAuthLoading(false);
       setError("Vul een geldige gebruikersnaam in.");
       return;
     }
 
     const email = usernameToAuthEmail(safeUsername);
 
-    const { error: loginError } = await supabase.auth.signInWithPassword({
+    const { data, error: loginError } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
 
     if (loginError) {
+      setIsAuthLoading(false);
       setError("Onjuiste gebruikersnaam of wachtwoord.");
       return;
     }
 
+    const authUserId = data.user?.id ?? data.session?.user?.id;
+    if (!authUserId) {
+      setIsAuthLoading(false);
+      setError("Inloggen gelukt, maar er is geen gekoppeld account gevonden.");
+      return;
+    }
+
+    const profile = await loadCurrentUser(authUserId);
+    if (!profile) {
+      await supabase.auth.signOut();
+      setIsAuthLoading(false);
+      setError("Je account is gevonden, maar niet gekoppeld aan een gebruikersprofiel.");
+      return;
+    }
+
+    await refreshUsers({ force: true });
     setError("");
     setUsername("");
     setPassword("");
+    setIsAuthLoading(false);
   };
 
   const logout = async () => {
@@ -1174,7 +1209,11 @@ const login = async (e: React.FormEvent<HTMLFormElement>) => {
                     <Badge className="rounded-full">
                       {currentUser.role === "admin" ? "Admin" : "Gebruiker"}
                     </Badge>
-                    <span className="text-sm text-slate-500">Teaminformatie heren 6</span>
+                    {lastDataRefreshAt ? (
+                      <span className="text-sm text-slate-500">
+                        Laatst ververst: {formatDateTime(lastDataRefreshAt)}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               </div>
