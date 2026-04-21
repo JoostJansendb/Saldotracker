@@ -196,7 +196,7 @@ async function resizeAvatar(dataUrl: string) {
     image.onerror = () => reject(new Error("Avatar afbeelding kon niet worden geladen."));
   });
 
-  const maxSize = 256;
+  const maxSize = 1024;
   const scale = Math.min(maxSize / image.width, maxSize / image.height, 1);
   const width = Math.max(1, Math.round(image.width * scale));
   const height = Math.max(1, Math.round(image.height * scale));
@@ -210,8 +210,10 @@ async function resizeAvatar(dataUrl: string) {
     return dataUrl;
   }
 
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
   context.drawImage(image, 0, 0, width, height);
-  return canvas.toDataURL("image/webp", 0.78);
+  return canvas.toDataURL("image/webp", 0.92);
 }
 
 async function dataUrlToBlob(dataUrl: string) {
