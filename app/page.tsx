@@ -227,7 +227,7 @@ const UsageLineChart = React.memo(function UsageLineChart({
 }) {
   const width = 640;
   const height = 240;
-  const paddingX = 28;
+  const paddingX = 48;
   const paddingTop = 18;
   const paddingBottom = 38;
   const graphHeight = height - paddingTop - paddingBottom;
@@ -269,7 +269,7 @@ const UsageLineChart = React.memo(function UsageLineChart({
         <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Gebruiksstatistieken grafiek">
           {tickValues.map((tick) => {
             const y = paddingTop + graphHeight - (tick / maxValue) * graphHeight;
-            return <text key={tick} x={paddingX - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#0f172a">{tick}</text>;
+            return <text key={tick} x={paddingX - 10} y={y + 7} textAnchor="end" fontSize="18" fill="#0f172a">{tick}</text>;
           })}
 
           <path d={areaPath} fill="rgba(220, 38, 38, 0.14)" />
@@ -286,8 +286,17 @@ const UsageLineChart = React.memo(function UsageLineChart({
 
           {visibleLabelIndexes.map((index) => {
             const point = pointCoordinates[index];
+            const isFirst = index === 0;
+            const isLast = index === pointCoordinates.length - 1;
             return (
-              <text key={point.key} x={point.x} y={height - 10} textAnchor="middle" fontSize="11" fill="#0f172a">
+              <text
+                key={point.key}
+                x={point.x}
+                y={height - 6}
+                textAnchor={isFirst ? "start" : isLast ? "end" : "middle"}
+                fontSize="17"
+                fill="#0f172a"
+              >
                 {point.label}
               </text>
             );
@@ -688,15 +697,6 @@ export default function SaldoTrackerApp() {
       .map((bucket) => ({ key: bucket.key, label: bucket.label, value: bucket.count }));
   }, [currentUser?.role, eventAggregation, filteredAppEvents]);
 
-  const appEventSummary = useMemo(() => {
-    const totalEvents = filteredAppEvents.length;
-    const maxBucket = aggregatedAppEvents.reduce<{ label: string; value: number } | null>(
-      (best, bucket) => (!best || bucket.value > best.value ? { label: bucket.label, value: bucket.value } : best),
-      null,
-    );
-    return { totalEvents, maxBucket };
-  }, [aggregatedAppEvents, filteredAppEvents.length]);
-
   const appEventTableRows = useMemo(() => {
     const usersById = new Map(users.map((user) => [user.id, user.name]));
     return [...filteredAppEvents]
@@ -707,6 +707,89 @@ export default function SaldoTrackerApp() {
         name: event.user_id ? usersById.get(event.user_id) ?? "Onbekend" : "Onbekend",
       }));
   }, [filteredAppEvents, users]);
+
+  const isDevUser = isDev(currentUser?.role ?? "user");
+  const devUsageSection = isDevUser ? (
+    <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
+      <Card className="rounded-3xl border-0 shadow-sm">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle className="text-xl">Gebruikersstatistieken</CardTitle>
+              <p className="mt-1 text-sm text-slate-500">`login` en `session_resume` events over tijd.</p>
+            </div>
+            <div className="w-full space-y-3 sm:w-56">
+              <div>
+                <Label htmlFor="event-aggregation">Aggregatie</Label>
+                <select
+                  id="event-aggregation"
+                  value={eventAggregation}
+                  onChange={(e) => setEventAggregation(e.target.value as EventAggregation)}
+                  className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-red-300 focus:ring-2 focus:ring-red-100"
+                >
+                  {eventAggregationOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={excludeJoostEvents}
+                  onChange={(e) => setExcludeJoostEvents(e.target.checked)}
+                  className="h-4 w-4 accent-slate-900"
+                />
+                <span>Developer uitsluiten</span>
+              </label>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {aggregatedAppEvents.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              Nog geen `login` of `session_resume` events beschikbaar voor de grafiek.
+            </div>
+          ) : (
+            <UsageLineChart points={aggregatedAppEvents} />
+          )}
+
+          <div className="space-y-3">
+            <div>
+              <h4 className="text-base font-semibold text-slate-900">Gebeurtenissen</h4>
+              <p className="mt-1 text-sm text-slate-500">Chronologisch overzicht van de events die in deze grafiek meetellen.</p>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border bg-white">
+              <div className="max-h-72 overflow-y-auto">
+                <Table>
+                  <TableHeader className="sticky top-0 z-10 bg-white">
+                    <TableRow>
+                      <TableHead>Datum en tijd</TableHead>
+                      <TableHead>Naam</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {appEventTableRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-slate-500">Nog geen gebeurtenissen beschikbaar.</TableCell>
+                      </TableRow>
+                    ) : (
+                      appEventTableRows.map((row) => (
+                        <TableRow key={row.id}>
+                          <TableCell className="font-medium">{row.createdAt}</TableCell>
+                          <TableCell>{row.name}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  ) : null;
 
   const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1152,176 +1235,87 @@ export default function SaldoTrackerApp() {
               </CardContent>
             </Card>
           </motion.div>
-        ) : (
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-            <Card className="rounded-3xl border-0 shadow-sm">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-xl">Statistieken</CardTitle>
-                <p className="mt-1 text-sm text-slate-500">Overzicht van opwaarderingen en trends.</p>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Card className="rounded-2xl border shadow-none">
-                    <CardContent className="space-y-3 p-5">
-                      <div className="flex items-center gap-2">
-                        <BarChart3 className="h-4 w-4 text-slate-600" />
-                        <h3 className="text-lg font-semibold">Algemeen</h3>
-                      </div>
-                      <p className="text-sm text-slate-600">Aantal opwaarderingen: <span className="font-medium text-slate-900">{statistics.positiveCount}</span></p>
-                      <p className="text-sm text-slate-600">Totaal opgewaardeerd: <span className="font-medium text-slate-900">{euro(statistics.totalTopUps)}</span></p>
-                      <p className="text-sm text-slate-600">Gemiddelde opwaardering: <span className="font-medium text-slate-900">{euro(statistics.averageTopUp)}</span></p>
-                      <p className="text-sm text-slate-600">Grootste opwaardering: <span className="font-medium text-slate-900">{euro(statistics.largestTopUp)}</span></p>
-                    </CardContent>
-                  </Card>
-
-                  <Card className="rounded-2xl border shadow-none">
-                    <CardContent className="space-y-3 p-5">
-                      <h3 className="text-lg font-semibold">Kas-kanonnen</h3>
-                      {statistics.topSpenders.length === 0 ? (
-                        <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {statistics.topSpenders.map((spender, index) => (
-                            <div key={spender.userId} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
-                              <span className="text-sm text-slate-700">{index + 1}. {spender.name}</span>
-                              <span className="text-sm font-semibold text-slate-900">{euro(spender.total)}</span>
-                            </div>
-                          ))}
+        ) : activeMainTab === "statistieken" ? (
+          <>
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
+              <Card className="rounded-3xl border-0 shadow-sm">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-xl">Statistieken</CardTitle>
+                  <p className="mt-1 text-sm text-slate-500">Overzicht van opwaarderingen en trends.</p>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Card className="rounded-2xl border shadow-none">
+                      <CardContent className="space-y-3 p-5">
+                        <div className="flex items-center gap-2">
+                          <BarChart3 className="h-4 w-4 text-slate-600" />
+                          <h3 className="text-lg font-semibold">Algemeen</h3>
                         </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  <Card className="rounded-2xl border shadow-none md:col-span-2">
-                    <CardContent className="space-y-3 p-5">
-                      <h3 className="text-lg font-semibold">Opwaarderingen per maand</h3>
-                      {statistics.monthlyTotals.length === 0 ? (
-                        <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {statistics.monthlyTotals.map((item) => (
-                            <div key={item.key} className="rounded-xl bg-slate-50">
-                              <button
-                                type="button"
-                                onClick={() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
-                                className="flex w-full items-center justify-between px-3 py-2 text-left"
-                              >
-                                <span className="text-sm text-slate-700">{item.label}</span>
-                                <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
-                              </button>
-                              {expandedStatMonths.includes(item.key) ? (
-                                <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
-                                  {item.perUserTotals.map((person) => (
-                                    <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
-                                      <span className="text-slate-600">{person.name}</span>
-                                      <span className="font-medium text-slate-900">{euro(person.total)}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {isDev(currentUser.role) ? (
-                    <Card className="rounded-2xl border shadow-none md:col-span-2">
-                      <CardContent className="space-y-5 p-5">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <h3 className="text-lg font-semibold text-slate-900">Gebruikstatistieken</h3>
-                            <p className="mt-1 text-sm text-slate-500">`login` en `session_resume` events over tijd</p>
-                          </div>
-                          <div className="w-full space-y-3 sm:w-56">
-                            <div>
-                              <Label htmlFor="event-aggregation">Aggregatie</Label>
-                              <select
-                                id="event-aggregation"
-                                value={eventAggregation}
-                                onChange={(e) => setEventAggregation(e.target.value as EventAggregation)}
-                                className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-red-300 focus:ring-2 focus:ring-red-100"
-                              >
-                                {eventAggregationOptions.map((option) => (
-                                  <option key={option.value} value={option.value}>{option.label}</option>
-                                ))}
-                              </select>
-                            </div>
-                            <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-                              <input
-                                type="checkbox"
-                                checked={excludeJoostEvents}
-                                onChange={(e) => setExcludeJoostEvents(e.target.checked)}
-                                className="h-4 w-4 accent-slate-900"
-                              />
-                              <span>Developer uitsluiten</span>
-                            </label>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                            <p className="text-sm text-slate-600">Totaal gemeten events</p>
-                            <p className="mt-1 text-2xl font-semibold text-slate-900">{appEventSummary.totalEvents}</p>
-                          </div>
-                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                            <p className="text-sm text-slate-600">Piek binnen deze weergave</p>
-                            <p className="mt-1 text-base font-semibold text-slate-900">
-                              {appEventSummary.maxBucket ? `${appEventSummary.maxBucket.label}: ${appEventSummary.maxBucket.value}` : "Nog geen data"}
-                            </p>
-                          </div>
-                        </div>
-
-                        {aggregatedAppEvents.length === 0 ? (
-                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-                            Nog geen `login` of `session_resume` events beschikbaar voor de grafiek.
-                          </div>
-                        ) : (
-                          <UsageLineChart points={aggregatedAppEvents} />
-                        )}
-
-                        <div className="space-y-3">
-                          <div>
-                            <h4 className="text-base font-semibold text-slate-900">Gebeurtenissen</h4>
-                            <p className="mt-1 text-sm text-slate-500">Chronologisch overzicht van de events die in deze grafiek meetellen.</p>
-                          </div>
-
-                          <div className="overflow-hidden rounded-2xl border bg-white">
-                            <div className="max-h-72 overflow-y-auto">
-                              <Table>
-                                <TableHeader className="sticky top-0 z-10 bg-white">
-                                  <TableRow>
-                                    <TableHead>Datum en tijd</TableHead>
-                                    <TableHead>Naam</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {appEventTableRows.length === 0 ? (
-                                    <TableRow>
-                                      <TableCell colSpan={2} className="text-center text-slate-500">Nog geen gebeurtenissen beschikbaar.</TableCell>
-                                    </TableRow>
-                                  ) : (
-                                    appEventTableRows.map((row) => (
-                                      <TableRow key={row.id}>
-                                        <TableCell className="font-medium">{row.createdAt}</TableCell>
-                                        <TableCell>{row.name}</TableCell>
-                                      </TableRow>
-                                    ))
-                                  )}
-                                </TableBody>
-                              </Table>
-                            </div>
-                          </div>
-                        </div>
+                        <p className="text-sm text-slate-600">Aantal opwaarderingen: <span className="font-medium text-slate-900">{statistics.positiveCount}</span></p>
+                        <p className="text-sm text-slate-600">Totaal opgewaardeerd: <span className="font-medium text-slate-900">{euro(statistics.totalTopUps)}</span></p>
+                        <p className="text-sm text-slate-600">Gemiddelde opwaardering: <span className="font-medium text-slate-900">{euro(statistics.averageTopUp)}</span></p>
+                        <p className="text-sm text-slate-600">Grootste opwaardering: <span className="font-medium text-slate-900">{euro(statistics.largestTopUp)}</span></p>
                       </CardContent>
                     </Card>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        )}
+
+                    <Card className="rounded-2xl border shadow-none">
+                      <CardContent className="space-y-3 p-5">
+                        <h3 className="text-lg font-semibold">Kas-kanonnen</h3>
+                        {statistics.topSpenders.length === 0 ? (
+                          <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {statistics.topSpenders.map((spender, index) => (
+                              <div key={spender.userId} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+                                <span className="text-sm text-slate-700">{index + 1}. {spender.name}</span>
+                                <span className="text-sm font-semibold text-slate-900">{euro(spender.total)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="rounded-2xl border shadow-none md:col-span-2">
+                      <CardContent className="space-y-3 p-5">
+                        <h3 className="text-lg font-semibold">Opwaarderingen per maand</h3>
+                        {statistics.monthlyTotals.length === 0 ? (
+                          <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {statistics.monthlyTotals.map((item) => (
+                              <div key={item.key} className="rounded-xl bg-slate-50">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
+                                  className="flex w-full items-center justify-between px-3 py-2 text-left"
+                                >
+                                  <span className="text-sm text-slate-700">{item.label}</span>
+                                  <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
+                                </button>
+                                {expandedStatMonths.includes(item.key) ? (
+                                  <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
+                                    {item.perUserTotals.map((person) => (
+                                      <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
+                                        <span className="text-slate-600">{person.name}</span>
+                                        <span className="font-medium text-slate-900">{euro(person.total)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+            {devUsageSection}
+          </>
+        ) : null}
       </div>
 
       {isPasswordModalOpen ? (
