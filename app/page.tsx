@@ -17,7 +17,7 @@ type User = {
   id: string;
   username: string;
   name: string;
-  role: "admin" | "user";
+  role: "admin" | "dev" | "user";
   balance: number;
   avatar: string;
 };
@@ -45,6 +45,15 @@ type Transaction = {
 };
 
 type AvatarCacheMap = Record<string, string>;
+type AppEventType = "login" | "logout" | "session_resume";
+type TrackedAppEventType = "login" | "session_resume";
+type AppEvent = {
+  id: string;
+  created_at: string;
+  user_id: string | null;
+  event_type: AppEventType;
+};
+type EventAggregation = "hour" | "day" | "week" | "month";
 
 const rideSchedule: RideScheduleItem[] = [
   { date: "1/3/2026", team: "tilburg H7", location: "uit", kilometers: 34, riders: ["sewi", "bram", "olivier", "hugo"] },
@@ -144,6 +153,61 @@ function avatarValueToSrc(value: string) {
 
 function buildAvatarObjectPath(userId: string) { return `users/${userId}/avatar-${Date.now()}.webp`; }
 function isDefined<T>(value: T | undefined): value is T { return value !== undefined; }
+function isAdmin(role: User["role"]) { return role === "admin"; }
+function isDev(role: User["role"]) { return role === "dev"; }
+function getRoleLabel(role: User["role"]) {
+  if (role === "admin") return "Admin";
+  if (role === "dev") return "Dev";
+  return "Gebruiker";
+}
+
+function getWeekStart(date: Date) {
+  const copy = new Date(date);
+  copy.setHours(0, 0, 0, 0);
+  const day = copy.getDay();
+  const diff = (day + 6) % 7;
+  copy.setDate(copy.getDate() - diff);
+  return copy;
+}
+
+function getBucketStart(dateString: string, aggregation: EventAggregation) {
+  const date = new Date(dateString);
+  if (aggregation === "hour") {
+    date.setMinutes(0, 0, 0);
+    return date;
+  }
+  if (aggregation === "day") {
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
+  if (aggregation === "week") return getWeekStart(date);
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function formatEventBucketLabel(bucketStart: Date, aggregation: EventAggregation) {
+  if (aggregation === "hour") {
+    return new Intl.DateTimeFormat("nl-NL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(bucketStart);
+  }
+  if (aggregation === "day") {
+    return new Intl.DateTimeFormat("nl-NL", { day: "2-digit", month: "2-digit" }).format(bucketStart);
+  }
+  if (aggregation === "week") {
+    const weekEnd = new Date(bucketStart);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const formatter = new Intl.DateTimeFormat("nl-NL", { day: "2-digit", month: "2-digit" });
+    return `${formatter.format(bucketStart)} - ${formatter.format(weekEnd)}`;
+  }
+  return new Intl.DateTimeFormat("nl-NL", { month: "short", year: "numeric" }).format(bucketStart);
+}
+
+const eventAggregationOptions: Array<{ value: EventAggregation; label: string }> = [
+  { value: "hour", label: "Uur" },
+  { value: "day", label: "Dag" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Maand" },
+];
+
+const trackedEventTypes: TrackedAppEventType[] = ["login", "session_resume"];
 
 const UserAvatar = React.memo(function UserAvatar({ name, avatar, className, fallbackClassName }: {
   name: string; avatar: string; className?: string; fallbackClassName?: string;
@@ -156,9 +220,89 @@ const UserAvatar = React.memo(function UserAvatar({ name, avatar, className, fal
   );
 });
 
+const UsageLineChart = React.memo(function UsageLineChart({
+  points,
+}: {
+  points: Array<{ key: string; label: string; value: number }>;
+}) {
+  const width = 640;
+  const height = 240;
+  const paddingX = 28;
+  const paddingTop = 18;
+  const paddingBottom = 38;
+  const graphHeight = height - paddingTop - paddingBottom;
+  const graphWidth = width - paddingX * 2;
+  const maxValue = Math.max(...points.map((point) => point.value), 1);
+  const tickValues = Array.from(new Set([0, Math.ceil(maxValue / 2), maxValue])).sort((a, b) => a - b);
+
+  const pointCoordinates = points.map((point, index) => {
+    const x = points.length === 1 ? width / 2 : paddingX + (index / (points.length - 1)) * graphWidth;
+    const y = paddingTop + graphHeight - (point.value / maxValue) * graphHeight;
+    return { ...point, x, y };
+  });
+
+  const createSmoothPath = (coordinates: typeof pointCoordinates) => {
+    if (coordinates.length === 0) return "";
+    if (coordinates.length === 1) return `M ${coordinates[0].x} ${coordinates[0].y}`;
+
+    let result = `M ${coordinates[0].x} ${coordinates[0].y}`;
+    for (let index = 0; index < coordinates.length - 1; index += 1) {
+      const current = coordinates[index];
+      const next = coordinates[index + 1];
+      const controlX = (current.x + next.x) / 2;
+      result += ` C ${controlX} ${current.y}, ${controlX} ${next.y}, ${next.x} ${next.y}`;
+    }
+    return result;
+  };
+
+  const path = createSmoothPath(pointCoordinates);
+  const areaPath = path
+    ? `${path} L ${pointCoordinates[pointCoordinates.length - 1].x} ${paddingTop + graphHeight} L ${pointCoordinates[0].x} ${paddingTop + graphHeight} Z`
+    : "";
+  const visibleLabelIndexes = points.length <= 6
+    ? points.map((_, index) => index)
+    : Array.from(new Set([0, Math.floor((points.length - 1) / 3), Math.floor(((points.length - 1) * 2) / 3), points.length - 1]));
+
+  return (
+    <div className="space-y-3">
+      <div className="h-64 w-full rounded-2xl border border-slate-200 bg-white p-3">
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Gebruiksstatistieken grafiek">
+          {tickValues.map((tick) => {
+            const y = paddingTop + graphHeight - (tick / maxValue) * graphHeight;
+            return <text key={tick} x={paddingX - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#0f172a">{tick}</text>;
+          })}
+
+          <path d={areaPath} fill="rgba(220, 38, 38, 0.14)" />
+          <path d={path} fill="none" stroke="#dc2626" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+
+          {pointCoordinates.map((point) => (
+            <g key={point.key}>
+              <circle cx={point.x} cy={point.y} r="4.5" fill="#dc2626" />
+              <circle cx={point.x} cy={point.y} r="9" fill="transparent">
+                <title>{`${point.label}: ${point.value}`}</title>
+              </circle>
+            </g>
+          ))}
+
+          {visibleLabelIndexes.map((index) => {
+            const point = pointCoordinates[index];
+            return (
+              <text key={point.key} x={point.x} y={height - 10} textAnchor="middle" fontSize="11" fill="#0f172a">
+                {point.label}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+      <p className="text-xs text-slate-500"> </p>
+    </div>
+  );
+});
+
 export default function SaldoTrackerApp() {
   const [avatarCache, setAvatarCache] = useState<AvatarCacheMap>({});
   const [users, setUsers] = useState<User[]>([]);
+  const [appEvents, setAppEvents] = useState<AppEvent[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -179,6 +323,8 @@ export default function SaldoTrackerApp() {
   const [passwordMessage, setPasswordMessage] = useState("");
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [expandedStatMonths, setExpandedStatMonths] = useState<string[]>([]);
+  const [eventAggregation, setEventAggregation] = useState<EventAggregation>("day");
+  const [excludeJoostEvents, setExcludeJoostEvents] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
@@ -191,6 +337,7 @@ export default function SaldoTrackerApp() {
   const isLoggedInRef = useRef(false);
   const touchStartYRef = useRef(0);
   const isPullingRef = useRef(false);
+  const hasLoggedSessionResumeRef = useRef(false);
 
   const mergeUserWithAvatarCache = (user: User) => ({ ...user, avatar: user.avatar || avatarCacheRef.current[user.id] || "" });
   const getAvatarForUser = (user: Pick<User, "id" | "avatar">) => avatarCache[user.id] || avatarValueToSrc(user.avatar);
@@ -215,14 +362,24 @@ export default function SaldoTrackerApp() {
     if (error) console.error("Fout bij verwijderen avatarbestand:", error);
   };
 
+  const logAppEvent = async (userId: string, eventType: AppEventType) => {
+    const { error } = await supabase.from("app_events").insert({ user_id: userId, event_type: eventType });
+    if (error) console.error(`Fout bij loggen app event (${eventType}):`, error);
+  };
+
   const resetAuthState = () => {
     isLoggedInRef.current = false;
+    hasLoggedSessionResumeRef.current = false;
+    setAppEvents([]);
     setCurrentUser(null);
     setUsers([]);
     setTransactions([]);
   };
 
-  const syncSessionState = async (session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"]) => {
+  const syncSessionState = async (
+    session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"],
+    { logSessionResume = false }: { logSessionResume?: boolean } = {},
+  ) => {
     if (!session?.user?.id) {
       resetAuthState();
       setIsAuthLoading(false);
@@ -232,7 +389,11 @@ export default function SaldoTrackerApp() {
     const profile = await loadCurrentUser(session.user.id);
     if (profile) {
       isLoggedInRef.current = true;
-      await refreshUsers({ force: true });
+      if (logSessionResume && !hasLoggedSessionResumeRef.current) {
+        hasLoggedSessionResumeRef.current = true;
+        await logAppEvent(profile.id, "session_resume");
+      }
+      await refreshUsers({ force: true, includeAppEvents: isDev(profile.role) });
       setError("");
     } else {
       await supabase.auth.signOut({ scope: "local" });
@@ -252,7 +413,7 @@ export default function SaldoTrackerApp() {
     return userWithAvatar;
   };
 
-  const refreshUsers = async ({ force = false }: { force?: boolean } = {}) => {
+  const refreshUsers = async ({ force = false, includeAppEvents }: { force?: boolean; includeAppEvents?: boolean } = {}) => {
     if (refreshUsersPromiseRef.current) return refreshUsersPromiseRef.current;
 
     const refreshPromise = (async () => {
@@ -264,6 +425,19 @@ export default function SaldoTrackerApp() {
         .from("transactions").select("id, created_at, user_id, name, amount_change").order("created_at", { ascending: false });
       if (transactionError) { console.error("Fout bij ophalen transacties:", transactionError); return; }
       if (transactionData) setTransactions(transactionData);
+      const shouldLoadAppEvents = includeAppEvents ?? Boolean(currentUser && isDev(currentUser.role));
+      if (shouldLoadAppEvents) {
+        const { data: appEventData, error: appEventError } = await supabase
+          .from("app_events")
+          .select("id, created_at, user_id, event_type")
+          .in("event_type", trackedEventTypes)
+          .order("created_at", { ascending: true });
+        if (appEventError) {
+          console.error("Fout bij ophalen app events:", appEventError);
+        } else if (appEventData) {
+          setAppEvents(appEventData);
+        }
+      }
       setLastDataRefreshAt(new Date().toISOString());
     })();
 
@@ -320,10 +494,13 @@ export default function SaldoTrackerApp() {
   useEffect(() => {
     let isMounted = true;
 
-    const handleSessionChange = async (session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"]) => {
+    const handleSessionChange = async (
+      session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"],
+      logSessionResume = false,
+    ) => {
       if (!isMounted) return;
       try {
-        await syncSessionState(session);
+        await syncSessionState(session, { logSessionResume });
       } catch (authError) {
         console.error("Fout tijdens synchroniseren auth status:", authError);
         if (isMounted) {
@@ -342,7 +519,7 @@ export default function SaldoTrackerApp() {
         setIsAuthLoading(false);
         return;
       }
-      void handleSessionChange(data.session);
+      void handleSessionChange(data.session, Boolean(data.session));
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -408,6 +585,9 @@ export default function SaldoTrackerApp() {
       .channel(`saldo-live-${currentUser.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => scheduleRealtimeRefresh(true))
       .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "app_events" }, () => {
+        if (isDev(currentUser.role)) scheduleRealtimeRefresh(false);
+      })
       .subscribe();
 
     return () => {
@@ -417,8 +597,8 @@ export default function SaldoTrackerApp() {
     };
   }, [currentUser]);
 
-  const sortedUsers = useMemo(() => [...users].filter((u) => u.role !== "admin").sort((a, b) => b.balance - a.balance), [users]);
-  const totalBalance = useMemo(() => users.filter((u) => u.role !== "admin").reduce((sum, u) => sum + u.balance, 0), [users]);
+  const sortedUsers = useMemo(() => [...users].filter((u) => !isAdmin(u.role)).sort((a, b) => b.balance - a.balance), [users]);
+  const totalBalance = useMemo(() => users.filter((u) => !isAdmin(u.role)).reduce((sum, u) => sum + u.balance, 0), [users]);
 
   const statistics = useMemo(() => {
     const positiveTransactions = transactions.filter((t) => t.amount_change > 0);
@@ -473,6 +653,61 @@ export default function SaldoTrackerApp() {
     return totals;
   }, [transactions]);
 
+  const joostUserIds = useMemo(
+    () => new Set(users.filter((user) => user.name === "Joost Jansen").map((user) => user.id)),
+    [users],
+  );
+
+  const filteredAppEvents = useMemo(() => {
+    if (!excludeJoostEvents) return appEvents;
+    return appEvents.filter((event) => !event.user_id || !joostUserIds.has(event.user_id));
+  }, [appEvents, excludeJoostEvents, joostUserIds]);
+
+  const aggregatedAppEvents = useMemo(() => {
+    if (!isDev(currentUser?.role ?? "user")) return [];
+
+    const buckets = new Map<string, { key: string; label: string; count: number; sortValue: number }>();
+    for (const event of filteredAppEvents) {
+      const bucketStart = getBucketStart(event.created_at, eventAggregation);
+      const key = bucketStart.toISOString();
+      const existing = buckets.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        buckets.set(key, {
+          key,
+          label: formatEventBucketLabel(bucketStart, eventAggregation),
+          count: 1,
+          sortValue: bucketStart.getTime(),
+        });
+      }
+    }
+
+    return Array.from(buckets.values())
+      .sort((a, b) => a.sortValue - b.sortValue)
+      .map((bucket) => ({ key: bucket.key, label: bucket.label, value: bucket.count }));
+  }, [currentUser?.role, eventAggregation, filteredAppEvents]);
+
+  const appEventSummary = useMemo(() => {
+    const totalEvents = filteredAppEvents.length;
+    const maxBucket = aggregatedAppEvents.reduce<{ label: string; value: number } | null>(
+      (best, bucket) => (!best || bucket.value > best.value ? { label: bucket.label, value: bucket.value } : best),
+      null,
+    );
+    return { totalEvents, maxBucket };
+  }, [aggregatedAppEvents, filteredAppEvents.length]);
+
+  const appEventTableRows = useMemo(() => {
+    const usersById = new Map(users.map((user) => [user.id, user.name]));
+    return [...filteredAppEvents]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .map((event) => ({
+        id: event.id,
+        createdAt: formatDateTime(event.created_at),
+        name: event.user_id ? usersById.get(event.user_id) ?? "Onbekend" : "Onbekend",
+      }));
+  }, [filteredAppEvents, users]);
+
   const login = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError("");
@@ -481,8 +716,9 @@ export default function SaldoTrackerApp() {
       if (!normalizedUsername || !password.trim()) { setError("Vul gebruikersnaam en wachtwoord in."); return; }
       const safeUsername = sanitizeUsername(normalizedUsername);
       if (!safeUsername) { setError("Vul een geldige gebruikersnaam in."); return; }
-      const { error: loginError } = await supabase.auth.signInWithPassword({ email: usernameToAuthEmail(safeUsername), password });
+      const { data, error: loginError } = await supabase.auth.signInWithPassword({ email: usernameToAuthEmail(safeUsername), password });
       if (loginError) { setError("Onjuiste gebruikersnaam of wachtwoord."); return; }
+      if (data.user?.id) await logAppEvent(data.user.id, "login");
       setUsername("");
       setPassword("");
     } catch (loginFlowError) {
@@ -492,6 +728,7 @@ export default function SaldoTrackerApp() {
   };
 
   const logout = async () => {
+    if (currentUser?.id) await logAppEvent(currentUser.id, "logout");
     const { error: logoutError } = await supabase.auth.signOut({ scope: "local" });
     if (logoutError) console.error("Fout bij uitloggen:", logoutError);
     resetAuthState();
@@ -692,7 +929,7 @@ export default function SaldoTrackerApp() {
                 <div>
                   <h1 className="text-xl font-semibold sm:text-2xl">Welkom, {currentUser.name}</h1>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <Badge className="rounded-full">{currentUser.role === "admin" ? "Admin" : "Gebruiker"}</Badge>
+                    <Badge className="rounded-full">{getRoleLabel(currentUser.role)}</Badge>
                     {lastDataRefreshAt ? (
                       <span className="text-sm text-slate-500">Bijgewerkt: {formatDateTime(lastDataRefreshAt)}</span>
                     ) : null}
@@ -719,16 +956,16 @@ export default function SaldoTrackerApp() {
                       <p className="mt-1 text-sm text-slate-500">Teamsaldo totaal: {euro(totalBalance)}</p>
                     </div>
                     <div className="flex flex-col gap-3 sm:items-end">
-                      {currentUser.role === "admin" ? (
+                      {isAdmin(currentUser.role) ? (
                         <Badge variant="secondary" className="w-fit rounded-full px-3 py-1">
                           <ShieldCheck className="mr-1 h-4 w-4" />
                           Admin kan saldo&apos;s aanpassen
                         </Badge>
                       ) : null}
-                      <TabsList className={`grid rounded-2xl w-full ${currentUser.role === "admin" ? "grid-cols-3 sm:w-[420px]" : "grid-cols-2 sm:w-[300px]"}`}>
+                      <TabsList className={`grid rounded-2xl w-full ${isAdmin(currentUser.role) ? "grid-cols-3 sm:w-[420px]" : "grid-cols-2 sm:w-[300px]"}`}>
                         <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
                         <TabsTrigger value="transacties">Transacties</TabsTrigger>
-                        {currentUser.role === "admin" ? <TabsTrigger value="toevoegen">Saldo aanpassen</TabsTrigger> : null}
+                        {isAdmin(currentUser.role) ? <TabsTrigger value="toevoegen">Saldo aanpassen</TabsTrigger> : null}
                       </TabsList>
                     </div>
                   </div>
@@ -799,7 +1036,7 @@ export default function SaldoTrackerApp() {
                     </div>
                   </TabsContent>
 
-                  {currentUser.role === "admin" ? (
+                  {isAdmin(currentUser.role) ? (
                     <TabsContent value="toevoegen" className="mt-0">
                       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
                         <Card className="rounded-2xl border shadow-none">
@@ -988,6 +1225,98 @@ export default function SaldoTrackerApp() {
                       )}
                     </CardContent>
                   </Card>
+
+                  {isDev(currentUser.role) ? (
+                    <Card className="rounded-2xl border shadow-none md:col-span-2">
+                      <CardContent className="space-y-5 p-5">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <h3 className="text-lg font-semibold text-slate-900">Gebruikstatistieken</h3>
+                            <p className="mt-1 text-sm text-slate-500">`login` en `session_resume` events over tijd</p>
+                          </div>
+                          <div className="w-full space-y-3 sm:w-56">
+                            <div>
+                              <Label htmlFor="event-aggregation">Aggregatie</Label>
+                              <select
+                                id="event-aggregation"
+                                value={eventAggregation}
+                                onChange={(e) => setEventAggregation(e.target.value as EventAggregation)}
+                                className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-red-300 focus:ring-2 focus:ring-red-100"
+                              >
+                                {eventAggregationOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={excludeJoostEvents}
+                                onChange={(e) => setExcludeJoostEvents(e.target.checked)}
+                                className="h-4 w-4 accent-slate-900"
+                              />
+                              <span>Developer uitsluiten</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                            <p className="text-sm text-slate-600">Totaal gemeten events</p>
+                            <p className="mt-1 text-2xl font-semibold text-slate-900">{appEventSummary.totalEvents}</p>
+                          </div>
+                          <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                            <p className="text-sm text-slate-600">Piek binnen deze weergave</p>
+                            <p className="mt-1 text-base font-semibold text-slate-900">
+                              {appEventSummary.maxBucket ? `${appEventSummary.maxBucket.label}: ${appEventSummary.maxBucket.value}` : "Nog geen data"}
+                            </p>
+                          </div>
+                        </div>
+
+                        {aggregatedAppEvents.length === 0 ? (
+                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                            Nog geen `login` of `session_resume` events beschikbaar voor de grafiek.
+                          </div>
+                        ) : (
+                          <UsageLineChart points={aggregatedAppEvents} />
+                        )}
+
+                        <div className="space-y-3">
+                          <div>
+                            <h4 className="text-base font-semibold text-slate-900">Gebeurtenissen</h4>
+                            <p className="mt-1 text-sm text-slate-500">Chronologisch overzicht van de events die in deze grafiek meetellen.</p>
+                          </div>
+
+                          <div className="overflow-hidden rounded-2xl border bg-white">
+                            <div className="max-h-72 overflow-y-auto">
+                              <Table>
+                                <TableHeader className="sticky top-0 z-10 bg-white">
+                                  <TableRow>
+                                    <TableHead>Datum en tijd</TableHead>
+                                    <TableHead>Naam</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {appEventTableRows.length === 0 ? (
+                                    <TableRow>
+                                      <TableCell colSpan={2} className="text-center text-slate-500">Nog geen gebeurtenissen beschikbaar.</TableCell>
+                                    </TableRow>
+                                  ) : (
+                                    appEventTableRows.map((row) => (
+                                      <TableRow key={row.id}>
+                                        <TableCell className="font-medium">{row.createdAt}</TableCell>
+                                        <TableCell>{row.name}</TableCell>
+                                      </TableRow>
+                                    ))
+                                  )}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>
