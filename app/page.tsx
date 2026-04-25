@@ -662,6 +662,19 @@ export default function SaldoTrackerApp() {
     return totals;
   }, [transactions]);
 
+  const spenderChartData = useMemo(
+    () => [...users]
+      .filter((user) => !isAdmin(user.role))
+      .map((user) => ({
+        userId: user.id,
+        username: user.username,
+        total: totalPositivePerUser.get(user.id) ?? 0,
+      }))
+      .filter((user) => user.total > 0)
+      .sort((a, b) => b.total - a.total),
+    [totalPositivePerUser, users],
+  );
+
   const joostUserIds = useMemo(
     () => new Set(users.filter((user) => user.name === "Joost Jansen").map((user) => user.id)),
     [users],
@@ -1261,16 +1274,29 @@ export default function SaldoTrackerApp() {
                     <Card className="rounded-2xl border shadow-none">
                       <CardContent className="space-y-3 p-5">
                         <h3 className="text-lg font-semibold">Kas-kanonnen</h3>
-                        {statistics.topSpenders.length === 0 ? (
+                        {spenderChartData.length === 0 ? (
                           <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                         ) : (
                           <div className="space-y-2">
-                            {statistics.topSpenders.map((spender, index) => (
-                              <div key={spender.userId} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
-                                <span className="text-sm text-slate-700">{index + 1}. {spender.name}</span>
-                                <span className="text-sm font-semibold text-slate-900">{euro(spender.total)}</span>
-                              </div>
-                            ))}
+                            {spenderChartData.map((spender) => {
+                              const maxTotal = Math.max(...spenderChartData.map((item) => item.total), 1);
+                              const widthPercent = maxTotal === 0 ? 0 : (spender.total / maxTotal) * 100;
+                              return (
+                                <div key={spender.userId} className="flex items-center gap-2">
+                                  <div className="w-20 shrink-0 text-right text-xs font-medium text-slate-700">{spender.username}</div>
+                                  <div className="w-full">
+                                    <div className="flex items-center">
+                                      <div
+                                        className="h-3 bg-red-500 transition-[width]"
+                                        style={{ width: `${widthPercent}%` }}
+                                      />
+                                      <span className="ml-2 shrink-0 text-xs font-semibold text-slate-900">{euro(spender.total)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <p className="text-xs text-slate-500"> </p>
                           </div>
                         )}
                       </CardContent>
