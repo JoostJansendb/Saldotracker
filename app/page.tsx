@@ -272,12 +272,12 @@ const UsageLineChart = React.memo(function UsageLineChart({
             return <text key={tick} x={paddingX - 10} y={y + 7} textAnchor="end" fontSize="18" fill="#0f172a">{tick}</text>;
           })}
 
-          <path d={areaPath} fill="rgba(220, 38, 38, 0.14)" />
-          <path d={path} fill="none" stroke="#dc2626" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+          <path d={areaPath} fill="rgba(60, 71, 89, 0.18)" />
+          <path d={path} fill="none" stroke="#3c4759" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
 
           {pointCoordinates.map((point) => (
             <g key={point.key}>
-              <circle cx={point.x} cy={point.y} r="4.5" fill="#dc2626" />
+              <circle cx={point.x} cy={point.y} r="4.5" fill="#3c4759" />
               <circle cx={point.x} cy={point.y} r="9" fill="transparent">
                 <title>{`${point.label}: ${point.value}`}</title>
               </circle>
@@ -1277,26 +1277,27 @@ export default function SaldoTrackerApp() {
                         {spenderChartData.length === 0 ? (
                           <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                         ) : (
-                          <div className="space-y-2">
-                            {spenderChartData.map((spender) => {
+                          <div className="space-y-1">
+                            {(() => {
                               const maxTotal = Math.max(...spenderChartData.map((item) => item.total), 1);
-                              const widthPercent = maxTotal === 0 ? 0 : (spender.total / maxTotal) * 100;
-                              return (
-                                <div key={spender.userId} className="flex items-center gap-2">
-                                  <div className="w-20 shrink-0 text-right text-xs font-medium text-slate-700">{spender.username}</div>
-                                  <div className="w-full">
-                                    <div className="flex items-center">
-                                      <div
-                                        className="h-3 bg-red-500 transition-[width]"
-                                        style={{ width: `${widthPercent}%` }}
-                                      />
-                                      <span className="ml-2 shrink-0 text-xs font-semibold text-slate-900">{euro(spender.total)}</span>
+                              return spenderChartData.map((spender) => {
+                                const widthPercent = maxTotal === 0 ? 0 : (spender.total / maxTotal) * 100;
+                                return (
+                                  <div key={spender.userId} className="flex items-center gap-1">
+                                    <div className="w-12 shrink-0 text-right text-xs font-medium text-slate-700">{spender.username}</div>
+                                    <div className="w-full">
+                                      <div className="flex items-center">
+                                        <div
+                                          className="h-4 bg-[#3c4759] transition-[width]"
+                                          style={{ width: `${widthPercent}%` }}
+                                        />
+                                        <span className="ml-2 shrink-0 text-xs font-normal text-slate-900">{euro(spender.total)}</span>
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              );
-                            })}
-                            <p className="text-xs text-slate-500"> </p>
+                                );
+                              });
+                            })()}
                           </div>
                         )}
                       </CardContent>
