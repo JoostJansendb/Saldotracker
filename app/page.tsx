@@ -42,6 +42,8 @@ type Transaction = {
   user_id: string;
   name: string;
   amount_change: number;
+  category: "saldo" | "boete";
+  season: string;
 };
 
 type AvatarCacheMap = Record<string, string>;
@@ -104,6 +106,7 @@ function wait(ms: number) {
 const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.local";
 const avatarBucket = process.env.NEXT_PUBLIC_SUPABASE_AVATAR_BUCKET ?? "avatars";
 const pullRefreshMinimumDurationMs = 650;
+const defaultSeason = "2025-2026";
 
 function sanitizeUsername(username: string) {
   return username.trim().toLowerCase().replace(/\s+/g, ".").replace(/[^a-z0-9._-]/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 48);
@@ -322,6 +325,8 @@ export default function SaldoTrackerApp() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
+  const [activeFinanceCategory, setActiveFinanceCategory] = useState<"saldo" | "boete">("saldo");
+  const [selectedSeason, setSelectedSeason] = useState(defaultSeason);
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "" });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -431,7 +436,7 @@ export default function SaldoTrackerApp() {
       if (data) setUsers(data.map((user) => mergeUserWithAvatarCache({ ...user, avatar: "" })));
 
       const { data: transactionData, error: transactionError } = await supabase
-        .from("transactions").select("id, created_at, user_id, name, amount_change").order("created_at", { ascending: false });
+        .from("transactions").select("id, created_at, user_id, name, amount_change, category, season").order("created_at", { ascending: false });
       if (transactionError) { console.error("Fout bij ophalen transacties:", transactionError); return; }
       if (transactionData) setTransactions(transactionData);
       const shouldLoadAppEvents = includeAppEvents ?? Boolean(currentUser && isDev(currentUser.role));
@@ -607,10 +612,47 @@ export default function SaldoTrackerApp() {
   }, [currentUser]);
 
   const sortedUsers = useMemo(() => [...users].filter((u) => !isAdmin(u.role)).sort((a, b) => b.balance - a.balance), [users]);
-  const totalBalance = useMemo(() => users.filter((u) => !isAdmin(u.role)).reduce((sum, u) => sum + u.balance, 0), [users]);
+  const saldoTransactions = useMemo(() => transactions.filter((transaction) => transaction.category === "saldo"), [transactions]);
+  const boeteTransactions = useMemo(
+    () => transactions.filter((transaction) => transaction.category === "boete" && transaction.season === selectedSeason),
+    [selectedSeason, transactions],
+  );
+  const availableSeasons = useMemo(() => {
+    const seasons = new Set<string>([defaultSeason]);
+    for (const transaction of transactions) {
+      if (transaction.category === "boete") seasons.add(transaction.season);
+    }
+    return Array.from(seasons).sort((a, b) => b.localeCompare(a));
+  }, [transactions]);
+  const boeteTotalsPerUser = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const transaction of boeteTransactions) {
+      totals.set(transaction.user_id, (totals.get(transaction.user_id) ?? 0) + transaction.amount_change);
+    }
+    return totals;
+  }, [boeteTransactions]);
+  const visibleUsers = useMemo(() => {
+    if (activeFinanceCategory === "saldo") return sortedUsers;
+    return [...users]
+      .filter((user) => !isAdmin(user.role))
+      .map((user) => ({ ...user, balance: boeteTotalsPerUser.get(user.id) ?? 0 }))
+      .sort((a, b) => b.balance - a.balance);
+  }, [activeFinanceCategory, boeteTotalsPerUser, sortedUsers, users]);
+  const filteredTransactions = useMemo(
+    () => activeFinanceCategory === "saldo" ? saldoTransactions : boeteTransactions,
+    [activeFinanceCategory, boeteTransactions, saldoTransactions],
+  );
+  const totalBalance = useMemo(() => visibleUsers.reduce((sum, user) => sum + user.balance, 0), [visibleUsers]);
+  const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : "Boetes";
+  const financeCategoryDescription = activeFinanceCategory === "saldo" ? "Teamsaldo totaal" : "Openstaande boetes totaal";
+  const adminSectionTitle = activeFinanceCategory === "saldo" ? "Saldo aanpassen" : "Boetes uitdelen";
+  const adminSectionDescription = activeFinanceCategory === "saldo"
+    ? "Selecteer 1 of meerdere gebruikers en voeg in één keer hetzelfde bedrag toe."
+    : "Selecteer 1 of meerdere gebruikers en geef in één keer hetzelfde boetebedrag.";
+  const amountInputLabel = activeFinanceCategory === "saldo" ? "Bedrag" : "Boetebedrag";
 
   const statistics = useMemo(() => {
-    const positiveTransactions = transactions.filter((t) => t.amount_change > 0);
+    const positiveTransactions = saldoTransactions.filter((t) => t.amount_change > 0);
     const totalTopUps = positiveTransactions.reduce((sum, t) => sum + t.amount_change, 0);
     const averageTopUp = positiveTransactions.length > 0 ? totalTopUps / positiveTransactions.length : 0;
     const largestTopUp = positiveTransactions.length > 0 ? Math.max(...positiveTransactions.map((t) => t.amount_change)) : 0;
@@ -651,16 +693,16 @@ export default function SaldoTrackerApp() {
       }));
 
     return { positiveCount: positiveTransactions.length, totalTopUps, averageTopUp, largestTopUp, topSpenders, monthlyTotals };
-  }, [transactions, users]);
+  }, [saldoTransactions, users]);
 
   const totalPositivePerUser = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const t of transactions) {
+    for (const t of saldoTransactions) {
       if (t.amount_change <= 0) continue;
       totals.set(t.user_id, (totals.get(t.user_id) ?? 0) + t.amount_change);
     }
     return totals;
-  }, [transactions]);
+  }, [saldoTransactions]);
 
   const spenderChartData = useMemo(
     () => [...users]
@@ -912,15 +954,31 @@ export default function SaldoTrackerApp() {
     for (const userId of addMoneyForm.selectedUserIds) {
       const user = users.find((u) => u.id === userId);
       if (!user) continue;
-      const newBalance = Number((user.balance + parsedAmount).toFixed(2));
-      const { error: updateError } = await supabase.from("users").update({ balance: newBalance }).eq("id", userId);
-      if (updateError) { setAddMoneyForm((prev) => ({ ...prev, message: "Saldo opslaan mislukt." })); return; }
-      const { error: transactionError } = await supabase.from("transactions").insert({ user_id: user.id, name: user.name, amount_change: parsedAmount });
+      if (activeFinanceCategory === "saldo") {
+        const newBalance = Number((user.balance + parsedAmount).toFixed(2));
+        const { error: updateError } = await supabase.from("users").update({ balance: newBalance }).eq("id", userId);
+        if (updateError) { setAddMoneyForm((prev) => ({ ...prev, message: "Saldo opslaan mislukt." })); return; }
+      }
+      const { error: transactionError } = await supabase
+        .from("transactions")
+        .insert({
+          user_id: user.id,
+          name: user.name,
+          amount_change: parsedAmount,
+          category: activeFinanceCategory,
+          season: activeFinanceCategory === "boete" ? selectedSeason : defaultSeason,
+        });
       if (transactionError) { setAddMoneyForm((prev) => ({ ...prev, message: "Transactie opslaan mislukt." })); return; }
     }
 
     await refreshUsers();
-    setAddMoneyForm({ selectedUserIds: [], amount: "", message: `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).` });
+    setAddMoneyForm({
+      selectedUserIds: [],
+      amount: "",
+      message: activeFinanceCategory === "saldo"
+        ? `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`
+        : `€ ${parsedAmount.toFixed(2)} boete gegeven aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`,
+    });
   };
 
   if (isAuthLoading) {
@@ -1048,20 +1106,45 @@ export default function SaldoTrackerApp() {
                 <CardHeader className="pb-3">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <CardTitle className="text-xl">Saldo</CardTitle>
-                      <p className="mt-1 text-sm text-slate-500">Teamsaldo totaal: {euro(totalBalance)}</p>
+                      <Label htmlFor="finance-category" className="text-xs uppercase tracking-wide text-slate-500"></Label>
+                      <select
+                        id="finance-category"
+                        value={activeFinanceCategory}
+                        onChange={(e) => setActiveFinanceCategory(e.target.value as typeof activeFinanceCategory)}
+                        className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
+                      >
+                        <option value="saldo">Saldo</option>
+                        <option value="boete">Boetes</option>
+                      </select>
+                      {activeFinanceCategory === "boete" ? (
+                        <>
+                          <Label htmlFor="season-filter" className="mt-3 block text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                          <select
+                            id="season-filter"
+                            value={selectedSeason}
+                            onChange={(e) => setSelectedSeason(e.target.value)}
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
+                          >
+                            {availableSeasons.map((season) => (
+                              <option key={season} value={season}>{season}</option>
+                            ))}
+                          </select>
+                        </>
+                      ) : null}
+                      <CardTitle className="mt-3 text-xl">{financeCategoryLabel}</CardTitle>
+                      <p className="mt-1 text-sm text-slate-500">{financeCategoryDescription}: {euro(totalBalance)}</p>
                     </div>
                     <div className="flex flex-col gap-3 sm:items-end">
                       {isAdmin(currentUser.role) ? (
                         <Badge variant="secondary" className="w-fit rounded-full px-3 py-1">
                           <ShieldCheck className="mr-1 h-4 w-4" />
-                          Admin kan saldo&apos;s aanpassen
+                          {activeFinanceCategory === "saldo" ? "Admin kan saldo&apos;s aanpassen" : "Admin kan boetes uitdelen"}
                         </Badge>
                       ) : null}
                       <TabsList className={`grid rounded-2xl w-full ${isAdmin(currentUser.role) ? "grid-cols-3 sm:w-[420px]" : "grid-cols-2 sm:w-[300px]"}`}>
                         <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
                         <TabsTrigger value="transacties">Transacties</TabsTrigger>
-                        {isAdmin(currentUser.role) ? <TabsTrigger value="toevoegen">Saldo aanpassen</TabsTrigger> : null}
+                        {isAdmin(currentUser.role) ? <TabsTrigger value="toevoegen">{activeFinanceCategory === "saldo" ? "Saldo aanpassen" : "Boetes uitdelen"}</TabsTrigger> : null}
                       </TabsList>
                     </div>
                   </div>
@@ -1075,11 +1158,11 @@ export default function SaldoTrackerApp() {
                           <TableRow>
                             <TableHead>Profiel</TableHead>
                             <TableHead>Naam</TableHead>
-                            <TableHead className="text-right">Saldo</TableHead>
+                            <TableHead className="text-right">{financeCategoryLabel}</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {sortedUsers.map((user) => (
+                          {visibleUsers.map((user) => (
                             <TableRow key={user.id}>
                               <TableCell>
                                 <button type="button" onClick={() => setSelectedUser(user)} className="rounded-full">
@@ -1088,7 +1171,7 @@ export default function SaldoTrackerApp() {
                               </TableCell>
                               <TableCell className="font-medium">{user.name}</TableCell>
                               <TableCell className="text-right font-semibold">
-                                <span className={user.balance >= 0 ? "text-slate-900" : "text-red-600"}>{euro(user.balance)}</span>
+                                <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
                               </TableCell>
                             </TableRow>
                           ))}
@@ -1109,18 +1192,21 @@ export default function SaldoTrackerApp() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {transactions.length === 0 ? (
+                            {filteredTransactions.length === 0 ? (
                               <TableRow>
                                 <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
                               </TableRow>
                             ) : (
-                              transactions.map((transaction) => (
+                              filteredTransactions.map((transaction) => (
                                 <TableRow key={transaction.id}>
                                   <TableCell>{formatDate(transaction.created_at)}</TableCell>
                                   <TableCell className="font-medium">{transaction.name}</TableCell>
                                   <TableCell className="text-right font-semibold">
-                                    <span className={transaction.amount_change >= 0 ? "text-green-600" : "text-red-600"}>
-                                      {transaction.amount_change >= 0 ? "+" : ""}{euro(transaction.amount_change)}
+                                    <span className={activeFinanceCategory === "saldo"
+                                      ? (transaction.amount_change >= 0 ? "text-green-600" : "text-red-600")
+                                      : "text-red-600"}
+                                    >
+                                      {activeFinanceCategory === "saldo" && transaction.amount_change >= 0 ? "+" : ""}{euro(transaction.amount_change)}
                                     </span>
                                   </TableCell>
                                 </TableRow>
@@ -1138,14 +1224,14 @@ export default function SaldoTrackerApp() {
                         <Card className="rounded-2xl border shadow-none">
                           <CardContent className="p-5">
                             <div className="space-y-2">
-                              <h3 className="text-lg font-semibold">Saldo aanpassen</h3>
-                              <p className="text-sm text-slate-500">Selecteer 1 of meerdere gebruikers en voeg in één keer hetzelfde bedrag toe.</p>
+                              <h3 className="text-lg font-semibold">{adminSectionTitle}</h3>
+                              <p className="text-sm text-slate-500">{adminSectionDescription}</p>
                             </div>
                             <div className="mt-5 space-y-4">
                               <div className="space-y-2">
                                 <Label>Gebruikers selecteren</Label>
                                 <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border p-3">
-                                  {sortedUsers.map((user) => {
+                                  {visibleUsers.map((user) => {
                                     const selected = addMoneyForm.selectedUserIds.includes(user.id);
                                     return (
                                       <button
@@ -1156,7 +1242,9 @@ export default function SaldoTrackerApp() {
                                           <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-10 w-10" />
                                           <div>
                                             <p className="font-medium">{user.name}</p>
-                                            <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>Huidig saldo: {euro(user.balance)}</p>
+                                            <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>
+                                              {activeFinanceCategory === "saldo" ? "Huidig saldo" : "Openstaande boetes"}: {euro(user.balance)}
+                                            </p>
                                           </div>
                                         </div>
                                         <div className={`rounded-full px-3 py-1 text-xs font-semibold ${selected ? "bg-white text-slate-900" : "bg-slate-100 text-slate-600"}`}>
@@ -1168,16 +1256,16 @@ export default function SaldoTrackerApp() {
                                 </div>
                               </div>
                               <div className="space-y-2">
-                                <Label htmlFor="amount">Bedrag</Label>
+                                <Label htmlFor="amount">{amountInputLabel}</Label>
                                 <Input
                                   id="amount" type="number" step="0.01" value={addMoneyForm.amount}
                                   onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
-                                  placeholder="Bijv. 10,50" className="h-12 rounded-2xl"
+                                  placeholder={activeFinanceCategory === "saldo" ? "Bijv. 10,50" : "Bijv. 5,00"} className="h-12 rounded-2xl"
                                 />
                               </div>
                               <Button onClick={addMoneyToSelectedUsers} className="h-12 rounded-2xl">
                                 <PlusCircle className="mr-2 h-4 w-4" />
-                                Toevoegen
+                                {activeFinanceCategory === "saldo" ? "Toevoegen" : "Boete geven"}
                               </Button>
                               {addMoneyForm.message ? (
                                 <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
@@ -1193,7 +1281,7 @@ export default function SaldoTrackerApp() {
                               {addMoneyForm.selectedUserIds.length === 0 ? (
                                 <p className="text-sm text-slate-500">Nog niemand geselecteerd.</p>
                               ) : (
-                                sortedUsers.filter((u) => addMoneyForm.selectedUserIds.includes(u.id)).map((user) => (
+                                visibleUsers.filter((u) => addMoneyForm.selectedUserIds.includes(u.id)).map((user) => (
                                   <div key={user.id} className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-3">
                                     <div className="flex items-center gap-3">
                                       <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-9 w-9" />
@@ -1386,8 +1474,12 @@ export default function SaldoTrackerApp() {
                 <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="h-56 w-56 ring-4 ring-slate-100" fallbackClassName="text-2xl" />
               </div>
               <div className="space-y-3 rounded-2xl bg-slate-50 p-4 text-left">
-                <p className="text-base text-slate-700"><span className="font-semibold text-slate-900">Huidig saldo:</span> {euro(selectedUser.balance)}</p>
-                <p className="text-base text-slate-700"><span className="font-semibold text-slate-900">Totaal uitgegeven:</span> {euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}</p>
+                <p className="text-base text-slate-700">
+                  <span className="font-semibold text-slate-900">{activeFinanceCategory === "saldo" ? "Huidig saldo:" : "Openstaande boetes:"}</span> {euro(selectedUser.balance)}
+                </p>
+                {activeFinanceCategory === "saldo" ? (
+                  <p className="text-base text-slate-700"><span className="font-semibold text-slate-900">Totaal uitgegeven:</span> {euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}</p>
+                ) : null}
               </div>
             </div>
           </div>
