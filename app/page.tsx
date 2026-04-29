@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -1365,24 +1365,22 @@ export default function SaldoTrackerApp() {
                         {spenderChartData.length === 0 ? (
                           <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                         ) : (
-                          <div className="space-y-1">
+                          <div className="grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-x-2 gap-y-1">
                             {(() => {
                               const maxTotal = Math.max(...spenderChartData.map((item) => item.total), 1);
                               return spenderChartData.map((spender) => {
                                 const widthPercent = maxTotal === 0 ? 0 : (spender.total / maxTotal) * 100;
                                 return (
-                                  <div key={spender.userId} className="flex items-center gap-1">
-                                    <div className="w-12 shrink-0 text-right text-xs font-medium text-slate-700">{spender.username}</div>
-                                    <div className="w-full">
-                                      <div className="flex items-center">
-                                        <div
-                                          className="h-4 bg-[#3c4759] transition-[width]"
-                                          style={{ width: `${widthPercent}%` }}
-                                        />
-                                        <span className="ml-2 shrink-0 text-xs font-normal text-slate-900">{euro(spender.total)}</span>
-                                      </div>
+                                  <Fragment key={spender.userId}>
+                                    <div className="whitespace-nowrap text-right text-xs font-medium text-slate-700">{spender.username}</div>
+                                    <div className="min-w-0 overflow-hidden bg-slate-100">
+                                      <div
+                                        className="h-4 bg-[#3c4759] transition-[width]"
+                                        style={{ width: `${widthPercent}%` }}
+                                      />
                                     </div>
-                                  </div>
+                                    <span className="text-xs font-normal text-slate-900">{euro(spender.total)}</span>
+                                  </Fragment>
                                 );
                               });
                             })()}
