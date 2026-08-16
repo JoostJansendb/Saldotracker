@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3 } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3, ChevronDown } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -57,23 +57,50 @@ type AppEvent = {
 };
 type EventAggregation = "hour" | "day" | "week" | "month";
 
-const rideSchedule: RideScheduleItem[] = [
-  { date: "1/3/2026", team: "tilburg H7", location: "uit", kilometers: 34, riders: ["sewi", "bram", "olivier", "hugo"] },
-  { date: "8/3/2026", team: "Don Quishoot H3", location: "uit", kilometers: 37, riders: ["brek", "jonathan", "joost", "max"] },
-  { date: "15/3/2026", team: "Push H3", location: "thuis", kilometers: null, riders: [] },
-  { date: "22/3/2026", team: "Push H4", location: "uit", kilometers: 21, riders: ["pepijn", "sewi", "timon", "tim"] },
-  { date: "29/3/2026", team: "Rosmalen", location: "thuis", kilometers: null, riders: [] },
-  { date: "12/4/2026", team: "Were Di H4", location: "uit", kilometers: 26, riders: ["tijn", "pepijn", "hugo", "pieter"] },
-  { date: "19/4/2026", team: "Drunen", location: "Thuis", kilometers: null, riders: [] },
-  { date: "10/5/2026", team: "Best", location: "Thuis", kilometers: null, riders: [] },
-  { date: "17/5/2026", team: "Geel-Zwart", location: "uit", kilometers: 21, riders: ["tim", "timon", "pieter", "jonathan"] },
-  { date: "31/5/2026", team: "Den Bosch", location: "thuis", kilometers: null, riders: [] },
-  { date: "7/6/2026", team: "Oranje-Rood", location: "uit", kilometers: 43, riders: ["sam", "tom", "bas", "thomas"] },
-  { date: "14/6/2026", team: "tilburg H7", location: "thuis", kilometers: null, riders: [] },
-];
+// Tijdelijk hardcoded tot het rijschema uit Supabase komt.
+const rideScheduleBySeason: Record<string, RideScheduleItem[]> = {
+  "2025-2026": [
+    { date: "1/3/2026", team: "tilburg H7", location: "uit", kilometers: 34, riders: ["sewi", "bram", "olivier", "hugo"] },
+    { date: "8/3/2026", team: "Don Quishoot H3", location: "uit", kilometers: 37, riders: ["brek", "jonathan", "joost", "max"] },
+    { date: "15/3/2026", team: "Push H3", location: "thuis", kilometers: null, riders: [] },
+    { date: "22/3/2026", team: "Push H4", location: "uit", kilometers: 21, riders: ["pepijn", "sewi", "timon", "tim"] },
+    { date: "29/3/2026", team: "Rosmalen", location: "thuis", kilometers: null, riders: [] },
+    { date: "12/4/2026", team: "Were Di H4", location: "uit", kilometers: 26, riders: ["tijn", "pepijn", "hugo", "pieter"] },
+    { date: "19/4/2026", team: "Drunen", location: "Thuis", kilometers: null, riders: [] },
+    { date: "10/5/2026", team: "Best", location: "Thuis", kilometers: null, riders: [] },
+    { date: "17/5/2026", team: "Geel-Zwart", location: "uit", kilometers: 21, riders: ["tim", "timon", "pieter", "jonathan"] },
+    { date: "31/5/2026", team: "Den Bosch", location: "thuis", kilometers: null, riders: [] },
+    { date: "7/6/2026", team: "Oranje-Rood", location: "uit", kilometers: 43, riders: ["sam", "tom", "bas", "thomas"] },
+    { date: "14/6/2026", team: "tilburg H7", location: "thuis", kilometers: null, riders: [] },
+  ],
+};
+
+const rideScheduleSeasons = Object.keys(rideScheduleBySeason).sort((a, b) => b.localeCompare(a));
+
+const homeTeamName = "HC Den Bosch H6";
 
 function euro(amount: number) {
   return new Intl.NumberFormat("nl-NL", { style: "currency", currency: "EUR" }).format(amount);
+}
+
+function getRideScheduleMatchTitle(match: RideScheduleItem) {
+  const opponent = match.team || "Tegenstander";
+  return match.location.toLowerCase() === "uit" ? `${opponent} - ${homeTeamName}` : `${homeTeamName} - ${opponent}`;
+}
+
+const shortMonths = ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
+
+function getRideScheduleDateParts(date: string) {
+  const [day, month] = date.split("/");
+  return { day: day ?? date, month: shortMonths[Number(month) - 1] ?? "" };
+}
+
+function isCurrentUserRider(rider: string, user: User | null) {
+  if (!user) return false;
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const riderName = normalize(rider);
+  const fullName = normalize(user.name);
+  return riderName === normalize(user.username) || riderName === fullName || riderName === fullName.split(" ")[0];
 }
 
 function formatDate(dateString: string) {
@@ -327,6 +354,7 @@ export default function SaldoTrackerApp() {
   const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
   const [activeFinanceCategory, setActiveFinanceCategory] = useState<"saldo" | "boete">("saldo");
   const [selectedSeason, setSelectedSeason] = useState(defaultSeason);
+  const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? defaultSeason);
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "" });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -337,6 +365,7 @@ export default function SaldoTrackerApp() {
   const [passwordMessage, setPasswordMessage] = useState("");
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [expandedStatMonths, setExpandedStatMonths] = useState<string[]>([]);
+  const [expandedDrinkDates, setExpandedDrinkDates] = useState<string[]>([]);
   const [eventAggregation, setEventAggregation] = useState<EventAggregation>("day");
   const [excludeJoostEvents, setExcludeJoostEvents] = useState(false);
 
@@ -624,6 +653,7 @@ export default function SaldoTrackerApp() {
     }
     return Array.from(seasons).sort((a, b) => b.localeCompare(a));
   }, [transactions]);
+  const rideSchedule = useMemo(() => rideScheduleBySeason[selectedRideSeason] ?? [], [selectedRideSeason]);
   const boeteTotalsPerUser = useMemo(() => {
     const totals = new Map<string, number>();
     for (const transaction of boeteTransactions) {
@@ -642,6 +672,23 @@ export default function SaldoTrackerApp() {
     () => activeFinanceCategory === "saldo" ? saldoTransactions : boeteTransactions,
     [activeFinanceCategory, boeteTransactions, saldoTransactions],
   );
+  const gezopenPerDate = useMemo(() => {
+    const perDate = new Map<string, { key: string; label: string; total: number; entries: Transaction[] }>();
+    for (const transaction of saldoTransactions) {
+      if (transaction.amount_change >= 0) continue;
+      const date = new Date(transaction.created_at);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      const existing = perDate.get(key);
+      if (existing) {
+        existing.total += transaction.amount_change;
+        existing.entries.push(transaction);
+      } else {
+        perDate.set(key, { key, label: formatDate(transaction.created_at), total: transaction.amount_change, entries: [transaction] });
+      }
+    }
+    return Array.from(perDate.values()).sort((a, b) => b.key.localeCompare(a.key));
+  }, [saldoTransactions]);
+  const gestortTransactions = useMemo(() => saldoTransactions.filter((t) => t.amount_change >= 0), [saldoTransactions]);
   const totalBalance = useMemo(() => visibleUsers.reduce((sum, user) => sum + user.balance, 0), [visibleUsers]);
   const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : "Boetes";
   const financeCategoryDescription = activeFinanceCategory === "saldo" ? "Teamsaldo totaal" : "Openstaande boetes totaal";
@@ -1181,41 +1228,119 @@ export default function SaldoTrackerApp() {
                   </TabsContent>
 
                   <TabsContent value="transacties" className="mt-0">
-                    <div className="overflow-hidden rounded-2xl border bg-white">
-                      <div className="max-h-[420px] overflow-y-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Datum</TableHead>
-                              <TableHead>Naam</TableHead>
-                              <TableHead className="text-right">Verandering</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {filteredTransactions.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
-                              </TableRow>
-                            ) : (
-                              filteredTransactions.map((transaction) => (
-                                <TableRow key={transaction.id}>
-                                  <TableCell>{formatDate(transaction.created_at)}</TableCell>
-                                  <TableCell className="font-medium">{transaction.name}</TableCell>
-                                  <TableCell className="text-right font-semibold">
-                                    <span className={activeFinanceCategory === "saldo"
-                                      ? (transaction.amount_change >= 0 ? "text-green-600" : "text-red-600")
-                                      : "text-red-600"}
-                                    >
-                                      {activeFinanceCategory === "saldo" && transaction.amount_change >= 0 ? "+" : ""}{euro(transaction.amount_change)}
-                                    </span>
-                                  </TableCell>
-                                </TableRow>
-                              ))
-                            )}
-                          </TableBody>
-                        </Table>
+                    {activeFinanceCategory === "saldo" ? (
+                      <div className="space-y-12">
+                        <div>
+                          <h3 className="mb-2 text-sm font-semibold text-slate-900">Gezopen</h3>
+                          {gezopenPerDate.length === 0 ? (
+                            <p className="text-sm text-slate-500">Nog niks gezopen.</p>
+                          ) : (
+                            <div className="overflow-hidden rounded-2xl border bg-white">
+                              <div className="max-h-[360px] overflow-y-auto">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead>Datum</TableHead>
+                                      <TableHead>Sheriffs</TableHead>
+                                      <TableHead className="text-right">Bedrag</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {gezopenPerDate.map((day) => {
+                                      const isExpanded = expandedDrinkDates.includes(day.key);
+
+                                      return (
+                                        <Fragment key={day.key}>
+                                          <TableRow
+                                            onClick={() => setExpandedDrinkDates((prev) => isExpanded ? prev.filter((k) => k !== day.key) : [...prev, day.key])}
+                                            className="cursor-pointer"
+                                          >
+                                            <TableCell>
+                                              <span className="flex items-center gap-1">
+                                                <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                                                {day.label}
+                                              </span>
+                                            </TableCell>
+                                            <TableCell className="font-medium">{day.entries.length} {day.entries.length === 1 ? "sheriff" : "sheriffs"}</TableCell>
+                                            <TableCell className="text-right font-semibold text-slate-900">{euro(day.total)}</TableCell>
+                                          </TableRow>
+                                          {isExpanded ? day.entries.map((transaction) => (
+                                            <TableRow key={transaction.id}>
+                                              <TableCell />
+                                              <TableCell className="pl-6 text-slate-600">{transaction.name}</TableCell>
+                                              <TableCell className="text-right text-slate-900">{euro(transaction.amount_change)}</TableCell>
+                                            </TableRow>
+                                          )) : null}
+                                        </Fragment>
+                                      );
+                                    })}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <h3 className="mb-2 text-sm font-semibold text-slate-900">Gestort</h3>
+                          {gestortTransactions.length === 0 ? (
+                            <p className="text-sm text-slate-500">Nog geen stortingen.</p>
+                          ) : (
+                            <div className="overflow-hidden rounded-2xl border bg-white">
+                              <div className="max-h-[360px] overflow-y-auto">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead>Datum</TableHead>
+                                      <TableHead>Naam</TableHead>
+                                      <TableHead className="text-right">Bedrag</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {gestortTransactions.map((transaction) => (
+                                      <TableRow key={transaction.id}>
+                                        <TableCell>{formatDate(transaction.created_at)}</TableCell>
+                                        <TableCell className="font-medium">{transaction.name}</TableCell>
+                                        <TableCell className="text-right font-semibold text-slate-900">+{euro(transaction.amount_change)}</TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="overflow-hidden rounded-2xl border bg-white">
+                        <div className="max-h-[420px] overflow-y-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Datum</TableHead>
+                                <TableHead>Naam</TableHead>
+                                <TableHead className="text-right">Verandering</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {filteredTransactions.length === 0 ? (
+                                <TableRow>
+                                  <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
+                                </TableRow>
+                              ) : (
+                                filteredTransactions.map((transaction) => (
+                                  <TableRow key={transaction.id}>
+                                    <TableCell>{formatDate(transaction.created_at)}</TableCell>
+                                    <TableCell className="font-medium">{transaction.name}</TableCell>
+                                    <TableCell className="text-right font-semibold text-red-600">{euro(transaction.amount_change)}</TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    )}
                   </TabsContent>
 
                   {isAdmin(currentUser.role) ? (
@@ -1304,34 +1429,68 @@ export default function SaldoTrackerApp() {
         ) : activeMainTab === "rijschema" ? (
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
             <Card className="rounded-3xl border-0 shadow-sm">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-xl">Rijschema</CardTitle>
-                <p className="mt-1 text-sm text-slate-500">Overzicht van uit- en thuiswedstrijden met kilometers en rijders.</p>
+              <CardHeader className="pb-2">
+                <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                <select
+                  id="ride-season-filter"
+                  value={selectedRideSeason}
+                  onChange={(e) => setSelectedRideSeason(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
+                >
+                  {rideScheduleSeasons.map((season) => (
+                    <option key={season} value={season}>{season}</option>
+                  ))}
+                </select>
+                <CardTitle className="mt-3 text-lg">Rijschema</CardTitle>
+                <p className="text-xs text-slate-500">
+                  {rideSchedule.length} wedstrijden · {rideSchedule.filter((m) => m.location.toLowerCase() === "uit").length} uit · {rideSchedule.reduce((sum, m) => sum + (m.kilometers ?? 0), 0)} km
+                </p>
               </CardHeader>
               <CardContent>
-                <div className="overflow-hidden rounded-2xl border bg-white">
-                  <div className="space-y-3">
-                    {rideSchedule.map((match) => {
-                      const isAway = match.location.toLowerCase() === "uit";
-                      return (
-                        <div key={`${match.date}-${match.team}`} className={`rounded-2xl p-4 shadow-sm ${isAway ? "bg-gray-100" : "bg-white"}`}>
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm text-slate-500">{match.date}</p>
-                            <span className="text-sm font-medium capitalize">{match.location}</span>
-                          </div>
-                          <h3 className="mt-1 text-base font-semibold">{match.team || "Thuiswedstrijd"}</h3>
-                          <div className="mt-2 text-sm text-slate-600">{match.kilometers ? `${match.kilometers} km` : "Geen kilometers"}</div>
-                          {match.riders.length > 0 && (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {match.riders.map((rider) => (
-                                <span key={rider} className="rounded-full bg-white px-2 py-1 text-xs font-medium">{rider}</span>
-                              ))}
-                            </div>
-                          )}
+                {rideSchedule.length === 0 ? (
+                  <p className="py-2 text-sm text-slate-500">Nog geen rijschema voor dit seizoen.</p>
+                ) : null}
+                <div className="divide-y divide-slate-100">
+                  {rideSchedule.map((match) => {
+                    const isAway = match.location.toLowerCase() === "uit";
+                    const { day, month } = getRideScheduleDateParts(match.date);
+                    const isUserRiding = match.riders.some((rider) => isCurrentUserRider(rider, currentUser));
+
+                    return (
+                      <div
+                        key={`${match.date}-${match.team}`}
+                        className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "-mx-2 rounded-lg bg-slate-900/5 px-2" : ""}`}
+                      >
+                        <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
+                          <div className="text-[13px] font-semibold leading-none">{day}</div>
+                          <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-[13px] font-semibold leading-tight text-slate-900">{getRideScheduleMatchTitle(match)}</h3>
+                          {match.riders.length > 0 ? (
+                            <p className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] leading-tight text-slate-500">
+                              {match.riders.map((rider, index) => (
+                                <Fragment key={`${rider}-${index}`}>
+                                  {isCurrentUserRider(rider, currentUser) ? (
+                                    <span className="rounded bg-slate-900 px-1 py-px font-semibold text-white">{rider}</span>
+                                  ) : (
+                                    <span>{rider}</span>
+                                  )}
+                                  {index < match.riders.length - 1 ? <span className="text-slate-300">·</span> : null}
+                                </Fragment>
+                              ))}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <span className={`text-[9px] font-semibold uppercase tracking-wide ${isAway ? "text-slate-900" : "text-slate-400"}`}>{isAway ? "Uit" : "Thuis"}</span>
+                          {match.kilometers !== null ? (
+                            <div className="text-[11px] font-medium tabular-nums leading-tight text-slate-500">{match.kilometers} km</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>
