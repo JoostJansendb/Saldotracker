@@ -366,6 +366,10 @@ export default function SaldoTrackerApp() {
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [expandedStatMonths, setExpandedStatMonths] = useState<string[]>([]);
   const [expandedDrinkDates, setExpandedDrinkDates] = useState<string[]>([]);
+  const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
+  const [addUserForm, setAddUserForm] = useState({ username: "", name: "", password: "" });
+  const [addUserMessage, setAddUserMessage] = useState("");
+  const [isSavingUser, setIsSavingUser] = useState(false);
   const [eventAggregation, setEventAggregation] = useState<EventAggregation>("day");
   const [excludeJoostEvents, setExcludeJoostEvents] = useState(false);
 
@@ -985,6 +989,37 @@ export default function SaldoTrackerApp() {
     setPasswordMessage("Wachtwoord succesvol gewijzigd.");
   };
 
+  const createUser = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setAddUserMessage("");
+    if (!addUserForm.username.trim()) { setAddUserMessage("Vul een gebruikersnaam in."); return; }
+    if (!addUserForm.name.trim()) { setAddUserMessage("Vul de volledige naam in."); return; }
+    if (addUserForm.password.length < 8) { setAddUserMessage("Wachtwoord moet minimaal 8 tekens zijn."); return; }
+
+    setIsSavingUser(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) { setAddUserMessage("Sessie verlopen. Log opnieuw in."); return; }
+
+      const response = await fetch("/api/dev/create-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(addUserForm),
+      });
+      const result = await response.json();
+      if (!response.ok) { setAddUserMessage(result.error ?? "Gebruiker toevoegen mislukt."); return; }
+
+      await refreshUsers({ force: true });
+      setAddUserForm({ username: "", name: "", password: "" });
+      setAddUserMessage(`${result.user.name} is toegevoegd. Inloggen kan met gebruikersnaam "${result.user.username}".`);
+    } catch (createError) {
+      console.error("Fout bij toevoegen gebruiker:", createError);
+      setAddUserMessage("Gebruiker toevoegen mislukt. Probeer opnieuw.");
+    } finally {
+      setIsSavingUser(false);
+    }
+  };
+
   const toggleSelectedUser = (id: string) => {
     setAddMoneyForm((prev) => ({
       ...prev,
@@ -1122,6 +1157,17 @@ export default function SaldoTrackerApp() {
                             Wachtwoord wijzigen
                           </Button>
                         </div>
+                        {isDev(currentUser.role) ? (
+                          <div className="border-t border-slate-200 pt-3">
+                            <p className="font-semibold text-slate-900">Gebruiker toevoegen</p>
+                            <Button
+                              type="button" variant="outline" className="mt-3 w-full rounded-2xl"
+                              onClick={() => { setAddUserMessage(""); setAddUserForm({ username: "", name: "", password: "" }); setIsProfileMenuOpen(false); setIsAddUserModalOpen(true); }}
+                            >
+                              Gebruiker toevoegen
+                            </Button>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   ) : null}
@@ -1615,6 +1661,38 @@ export default function SaldoTrackerApp() {
                 <div className="space-y-2 pt-1">
                   <Button type="submit" className="w-full rounded-2xl" disabled={isSavingPassword}>{isSavingPassword ? "Opslaan..." : "Opslaan"}</Button>
                   <Button type="button" variant="outline" className="w-full rounded-2xl" disabled={isSavingPassword} onClick={() => setIsPasswordModalOpen(false)}>Annuleren</Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isAddUserModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => { if (isSavingUser) return; setIsAddUserModalOpen(false); }}>
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="space-y-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">Gebruiker toevoegen</h2>
+                <p className="mt-1 text-sm text-slate-500">De nieuwe gebruiker logt in met zijn gebruikersnaam en start op een saldo van € 0,00.</p>
+              </div>
+              <form onSubmit={createUser} className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="new-user-username">Gebruikersnaam</Label>
+                  <Input id="new-user-username" value={addUserForm.username} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, username: e.target.value })); setAddUserMessage(""); }} placeholder="gebruikersnaam" autoCapitalize="none" autoComplete="off" className="h-11 rounded-2xl" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="new-user-name">Volledige naam</Label>
+                  <Input id="new-user-name" value={addUserForm.name} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, name: e.target.value })); setAddUserMessage(""); }} placeholder="volledige naam" autoComplete="off" className="h-11 rounded-2xl" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="new-user-password">Wachtwoord</Label>
+                  <Input id="new-user-password" type="password" value={addUserForm.password} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, password: e.target.value })); setAddUserMessage(""); }} placeholder="Minimaal 8 tekens" autoComplete="new-password" className="h-11 rounded-2xl" />
+                </div>
+                {addUserMessage ? <p className="text-sm text-slate-600">{addUserMessage}</p> : null}
+                <div className="space-y-2 pt-1">
+                  <Button type="submit" className="w-full rounded-2xl" disabled={isSavingUser}>{isSavingUser ? "Toevoegen..." : "Toevoegen"}</Button>
+                  <Button type="button" variant="outline" className="w-full rounded-2xl" disabled={isSavingUser} onClick={() => setIsAddUserModalOpen(false)}>Sluiten</Button>
                 </div>
               </form>
             </div>
