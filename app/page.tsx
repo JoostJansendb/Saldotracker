@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3, ChevronDown } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -133,7 +133,20 @@ function wait(ms: number) {
 const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.local";
 const avatarBucket = process.env.NEXT_PUBLIC_SUPABASE_AVATAR_BUCKET ?? "avatars";
 const pullRefreshMinimumDurationMs = 650;
-const defaultSeason = "2025-2026";
+const allTimeSeasonValue = "alle";
+
+// Een seizoen loopt van 1 augustus t/m 31 juli: augustus 2026 t/m juli 2027 hoort bij "2026-2027".
+const seasonStartMonth = 7;
+
+function getSeasonForDate(date: Date | string) {
+  const value = typeof date === "string" ? new Date(date) : date;
+  const startYear = value.getMonth() >= seasonStartMonth ? value.getFullYear() : value.getFullYear() - 1;
+  return `${startYear}-${startYear + 1}`;
+}
+
+function getCurrentSeason() {
+  return getSeasonForDate(new Date());
+}
 
 function sanitizeUsername(username: string) {
   return username.trim().toLowerCase().replace(/\s+/g, ".").replace(/[^a-z0-9._-]/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 48);
@@ -353,8 +366,8 @@ export default function SaldoTrackerApp() {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
   const [activeFinanceCategory, setActiveFinanceCategory] = useState<"saldo" | "boete">("saldo");
-  const [selectedSeason, setSelectedSeason] = useState(defaultSeason);
-  const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? defaultSeason);
+  const [selectedSeason, setSelectedSeason] = useState(getCurrentSeason);
+  const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? getCurrentSeason());
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "" });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -365,7 +378,8 @@ export default function SaldoTrackerApp() {
   const [passwordMessage, setPasswordMessage] = useState("");
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [expandedStatMonths, setExpandedStatMonths] = useState<string[]>([]);
-  const [expandedDrinkDates, setExpandedDrinkDates] = useState<string[]>([]);
+  const [expandedStatDates, setExpandedStatDates] = useState<string[]>([]);
+  const [selectedStatsSeason, setSelectedStatsSeason] = useState<string | null>(null);
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [addUserForm, setAddUserForm] = useState({ username: "", name: "", password: "" });
   const [addUserMessage, setAddUserMessage] = useState("");
@@ -651,7 +665,7 @@ export default function SaldoTrackerApp() {
     [selectedSeason, transactions],
   );
   const availableSeasons = useMemo(() => {
-    const seasons = new Set<string>([defaultSeason]);
+    const seasons = new Set<string>([getCurrentSeason()]);
     for (const transaction of transactions) {
       if (transaction.category === "boete") seasons.add(transaction.season);
     }
@@ -676,23 +690,18 @@ export default function SaldoTrackerApp() {
     () => activeFinanceCategory === "saldo" ? saldoTransactions : boeteTransactions,
     [activeFinanceCategory, boeteTransactions, saldoTransactions],
   );
-  const gezopenPerDate = useMemo(() => {
-    const perDate = new Map<string, { key: string; label: string; total: number; entries: Transaction[] }>();
-    for (const transaction of saldoTransactions) {
-      if (transaction.amount_change >= 0) continue;
-      const date = new Date(transaction.created_at);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-      const existing = perDate.get(key);
-      if (existing) {
-        existing.total += transaction.amount_change;
-        existing.entries.push(transaction);
-      } else {
-        perDate.set(key, { key, label: formatDate(transaction.created_at), total: transaction.amount_change, entries: [transaction] });
-      }
-    }
-    return Array.from(perDate.values()).sort((a, b) => b.key.localeCompare(a.key));
+  const statsSeasons = useMemo(() => {
+    const seasons = new Set<string>([getCurrentSeason()]);
+    for (const transaction of saldoTransactions) seasons.add(getSeasonForDate(transaction.created_at));
+    return Array.from(seasons).sort((a, b) => b.localeCompare(a));
   }, [saldoTransactions]);
-  const gestortTransactions = useMemo(() => saldoTransactions.filter((t) => t.amount_change >= 0), [saldoTransactions]);
+  const activeStatsSeason = selectedStatsSeason ?? statsSeasons[0] ?? allTimeSeasonValue;
+  const statsTransactions = useMemo(
+    () => activeStatsSeason === allTimeSeasonValue
+      ? saldoTransactions
+      : saldoTransactions.filter((transaction) => getSeasonForDate(transaction.created_at) === activeStatsSeason),
+    [activeStatsSeason, saldoTransactions],
+  );
   const totalBalance = useMemo(() => visibleUsers.reduce((sum, user) => sum + user.balance, 0), [visibleUsers]);
   const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : "Boetes";
   const financeCategoryDescription = activeFinanceCategory === "saldo" ? "Teamsaldo totaal" : "Openstaande boetes totaal";
@@ -703,7 +712,7 @@ export default function SaldoTrackerApp() {
   const amountInputLabel = activeFinanceCategory === "saldo" ? "Bedrag" : "Boetebedrag";
 
   const statistics = useMemo(() => {
-    const positiveTransactions = saldoTransactions.filter((t) => t.amount_change > 0);
+    const positiveTransactions = statsTransactions.filter((t) => t.amount_change > 0);
     const totalTopUps = positiveTransactions.reduce((sum, t) => sum + t.amount_change, 0);
     const averageTopUp = positiveTransactions.length > 0 ? totalTopUps / positiveTransactions.length : 0;
     const largestTopUp = positiveTransactions.length > 0 ? Math.max(...positiveTransactions.map((t) => t.amount_change)) : 0;
@@ -743,17 +752,43 @@ export default function SaldoTrackerApp() {
           .sort((a, b) => b.total - a.total),
       }));
 
-    return { positiveCount: positiveTransactions.length, totalTopUps, averageTopUp, largestTopUp, topSpenders, monthlyTotals };
-  }, [saldoTransactions, users]);
+    const dailyExpensesMap = new Map<string, { key: string; label: string; total: number; perUser: Map<string, number> }>();
+
+    for (const t of statsTransactions) {
+      if (t.amount_change >= 0) continue;
+      const d = new Date(t.created_at);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const existing = dailyExpensesMap.get(key);
+      if (existing) {
+        existing.total += t.amount_change;
+        existing.perUser.set(t.user_id, (existing.perUser.get(t.user_id) ?? 0) + t.amount_change);
+      } else {
+        const perUser = new Map<string, number>();
+        perUser.set(t.user_id, t.amount_change);
+        dailyExpensesMap.set(key, { key, label: formatDate(t.created_at), total: t.amount_change, perUser });
+      }
+    }
+
+    const dailyExpenses = Array.from(dailyExpensesMap.values())
+      .sort((a, b) => b.key.localeCompare(a.key))
+      .map((item) => ({
+        key: item.key, label: item.label, total: item.total,
+        perUserTotals: Array.from(item.perUser.entries())
+          .map(([userId, total]) => ({ userId, total, name: users.find((u) => u.id === userId)?.name ?? "Onbekend" }))
+          .sort((a, b) => a.total - b.total),
+      }));
+
+    return { positiveCount: positiveTransactions.length, totalTopUps, averageTopUp, largestTopUp, topSpenders, monthlyTotals, dailyExpenses };
+  }, [statsTransactions, users]);
 
   const totalPositivePerUser = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const t of saldoTransactions) {
+    for (const t of statsTransactions) {
       if (t.amount_change <= 0) continue;
       totals.set(t.user_id, (totals.get(t.user_id) ?? 0) + t.amount_change);
     }
     return totals;
-  }, [saldoTransactions]);
+  }, [statsTransactions]);
 
   const spenderChartData = useMemo(
     () => [...users]
@@ -1048,7 +1083,7 @@ export default function SaldoTrackerApp() {
           name: user.name,
           amount_change: parsedAmount,
           category: activeFinanceCategory,
-          season: activeFinanceCategory === "boete" ? selectedSeason : defaultSeason,
+          season: activeFinanceCategory === "boete" ? selectedSeason : getCurrentSeason(),
         });
       if (transactionError) { setAddMoneyForm((prev) => ({ ...prev, message: "Transactie opslaan mislukt." })); return; }
     }
@@ -1274,119 +1309,37 @@ export default function SaldoTrackerApp() {
                   </TabsContent>
 
                   <TabsContent value="transacties" className="mt-0">
-                    {activeFinanceCategory === "saldo" ? (
-                      <div className="space-y-12">
-                        <div>
-                          <h3 className="mb-2 text-sm font-semibold text-slate-900">Gezopen</h3>
-                          {gezopenPerDate.length === 0 ? (
-                            <p className="text-sm text-slate-500">Nog niks gezopen.</p>
-                          ) : (
-                            <div className="overflow-hidden rounded-2xl border bg-white">
-                              <div className="max-h-[360px] overflow-y-auto">
-                                <Table>
-                                  <TableHeader>
-                                    <TableRow>
-                                      <TableHead>Datum</TableHead>
-                                      <TableHead>Sheriffs</TableHead>
-                                      <TableHead className="text-right">Bedrag</TableHead>
-                                    </TableRow>
-                                  </TableHeader>
-                                  <TableBody>
-                                    {gezopenPerDate.map((day) => {
-                                      const isExpanded = expandedDrinkDates.includes(day.key);
-
-                                      return (
-                                        <Fragment key={day.key}>
-                                          <TableRow
-                                            onClick={() => setExpandedDrinkDates((prev) => isExpanded ? prev.filter((k) => k !== day.key) : [...prev, day.key])}
-                                            className="cursor-pointer"
-                                          >
-                                            <TableCell>
-                                              <span className="flex items-center gap-1">
-                                                <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
-                                                {day.label}
-                                              </span>
-                                            </TableCell>
-                                            <TableCell className="font-medium">{day.entries.length} {day.entries.length === 1 ? "sheriff" : "sheriffs"}</TableCell>
-                                            <TableCell className="text-right font-semibold text-slate-900">{euro(day.total)}</TableCell>
-                                          </TableRow>
-                                          {isExpanded ? day.entries.map((transaction) => (
-                                            <TableRow key={transaction.id}>
-                                              <TableCell />
-                                              <TableCell className="pl-6 text-slate-600">{transaction.name}</TableCell>
-                                              <TableCell className="text-right text-slate-900">{euro(transaction.amount_change)}</TableCell>
-                                            </TableRow>
-                                          )) : null}
-                                        </Fragment>
-                                      );
-                                    })}
-                                  </TableBody>
-                                </Table>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        <div>
-                          <h3 className="mb-2 text-sm font-semibold text-slate-900">Gestort</h3>
-                          {gestortTransactions.length === 0 ? (
-                            <p className="text-sm text-slate-500">Nog geen stortingen.</p>
-                          ) : (
-                            <div className="overflow-hidden rounded-2xl border bg-white">
-                              <div className="max-h-[360px] overflow-y-auto">
-                                <Table>
-                                  <TableHeader>
-                                    <TableRow>
-                                      <TableHead>Datum</TableHead>
-                                      <TableHead>Naam</TableHead>
-                                      <TableHead className="text-right">Bedrag</TableHead>
-                                    </TableRow>
-                                  </TableHeader>
-                                  <TableBody>
-                                    {gestortTransactions.map((transaction) => (
-                                      <TableRow key={transaction.id}>
-                                        <TableCell>{formatDate(transaction.created_at)}</TableCell>
-                                        <TableCell className="font-medium">{transaction.name}</TableCell>
-                                        <TableCell className="text-right font-semibold text-slate-900">+{euro(transaction.amount_change)}</TableCell>
-                                      </TableRow>
-                                    ))}
-                                  </TableBody>
-                                </Table>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="overflow-hidden rounded-2xl border bg-white">
-                        <div className="max-h-[420px] overflow-y-auto">
-                          <Table>
-                            <TableHeader>
+                    <h3 className="mb-2 text-sm font-semibold text-slate-900">Transacties</h3>
+                    <div className="overflow-hidden rounded-2xl border bg-white">
+                      <div className="max-h-[420px] overflow-y-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Datum</TableHead>
+                              <TableHead>Naam</TableHead>
+                              <TableHead className="text-right">Bedrag</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredTransactions.length === 0 ? (
                               <TableRow>
-                                <TableHead>Datum</TableHead>
-                                <TableHead>Naam</TableHead>
-                                <TableHead className="text-right">Verandering</TableHead>
+                                <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
                               </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {filteredTransactions.length === 0 ? (
-                                <TableRow>
-                                  <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
+                            ) : (
+                              filteredTransactions.map((transaction) => (
+                                <TableRow key={transaction.id}>
+                                  <TableCell>{formatDate(transaction.created_at)}</TableCell>
+                                  <TableCell className="font-medium">{transaction.name}</TableCell>
+                                  <TableCell className={`text-right font-semibold ${activeFinanceCategory === "boete" ? "text-red-600" : "text-slate-900"}`}>
+                                    {transaction.amount_change > 0 && activeFinanceCategory === "saldo" ? "+" : ""}{euro(transaction.amount_change)}
+                                  </TableCell>
                                 </TableRow>
-                              ) : (
-                                filteredTransactions.map((transaction) => (
-                                  <TableRow key={transaction.id}>
-                                    <TableCell>{formatDate(transaction.created_at)}</TableCell>
-                                    <TableCell className="font-medium">{transaction.name}</TableCell>
-                                    <TableCell className="text-right font-semibold text-red-600">{euro(transaction.amount_change)}</TableCell>
-                                  </TableRow>
-                                ))
-                              )}
-                            </TableBody>
-                          </Table>
-                        </div>
+                              ))
+                            )}
+                          </TableBody>
+                        </Table>
                       </div>
-                    )}
+                    </div>
                   </TabsContent>
 
                   {isAdmin(currentUser.role) ? (
@@ -1546,8 +1499,26 @@ export default function SaldoTrackerApp() {
             <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
               <Card className="rounded-3xl border-0 shadow-sm">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-xl">Statistieken</CardTitle>
-                  <p className="mt-1 text-sm text-slate-500">Overzicht van opwaarderingen en trends.</p>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <CardTitle className="text-xl">Statistieken</CardTitle>
+                      <p className="mt-1 text-sm text-slate-500">Overzicht van opwaarderingen en trends.</p>
+                    </div>
+                    <div className="w-full sm:w-[180px]">
+                      <Label htmlFor="stats-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                      <select
+                        id="stats-season-filter"
+                        value={activeStatsSeason}
+                        onChange={(e) => setSelectedStatsSeason(e.target.value)}
+                        className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                      >
+                        <option value={allTimeSeasonValue}>Aller tijden</option>
+                        {statsSeasons.map((season) => (
+                          <option key={season} value={season}>{season}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="grid gap-4 md:grid-cols-2">
@@ -1612,6 +1583,40 @@ export default function SaldoTrackerApp() {
                                   <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
                                 </button>
                                 {expandedStatMonths.includes(item.key) ? (
+                                  <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
+                                    {item.perUserTotals.map((person) => (
+                                      <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
+                                        <span className="text-slate-600">{person.name}</span>
+                                        <span className="font-medium text-slate-900">{euro(person.total)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="rounded-2xl border shadow-none md:col-span-2">
+                      <CardContent className="space-y-3 p-5">
+                        <h3 className="text-lg font-semibold">Uitgaven per datum</h3>
+                        {statistics.dailyExpenses.length === 0 ? (
+                          <p className="text-sm text-slate-500">Nog geen uitgaven beschikbaar.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {statistics.dailyExpenses.map((item) => (
+                              <div key={item.key} className="rounded-xl bg-slate-50">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedStatDates((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
+                                  className="flex w-full items-center justify-between px-3 py-2 text-left"
+                                >
+                                  <span className="text-sm text-slate-700">{item.label}</span>
+                                  <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
+                                </button>
+                                {expandedStatDates.includes(item.key) ? (
                                   <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
                                     {item.perUserTotals.map((person) => (
                                       <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
