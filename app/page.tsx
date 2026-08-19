@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3 } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3, Check, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -26,6 +26,7 @@ type AddMoneyFormState = {
   selectedUserIds: string[];
   amount: string;
   message: string;
+  fixedChargeId: string;
 };
 
 type RideScheduleItem = {
@@ -36,14 +37,24 @@ type RideScheduleItem = {
   riders: string[];
 };
 
+type FinanceCategory = "saldo" | "boete" | "vaste_lasten";
+
 type Transaction = {
   id: string;
   created_at: string;
   user_id: string;
   name: string;
   amount_change: number;
-  category: "saldo" | "boete";
+  category: FinanceCategory;
   season: string;
+  fixed_charge_id: string | null;
+};
+
+// Een vaste lasten post: elke seizoenshelft maakt de admin er een aan.
+type FixedCharge = {
+  id: string;
+  created_at: string;
+  name: string;
 };
 
 type AvatarCacheMap = Record<string, string>;
@@ -365,11 +376,16 @@ export default function SaldoTrackerApp() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
-  const [activeFinanceCategory, setActiveFinanceCategory] = useState<"saldo" | "boete">("saldo");
+  const [activeFinanceCategory, setActiveFinanceCategory] = useState<FinanceCategory>("saldo");
+  const [fixedCharges, setFixedCharges] = useState<FixedCharge[]>([]);
+  const [selectedFixedChargeId, setSelectedFixedChargeId] = useState<string | null>(null);
+  const [fixedChargeForm, setFixedChargeForm] = useState({ name: "", message: "" });
+  const [isSavingFixedCharge, setIsSavingFixedCharge] = useState(false);
+  const [deletingFixedChargeId, setDeletingFixedChargeId] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState(getCurrentSeason);
   const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? getCurrentSeason());
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
-  const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "" });
+  const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "" });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [currentPasswordForChange, setCurrentPasswordForChange] = useState("");
@@ -435,6 +451,7 @@ export default function SaldoTrackerApp() {
     setCurrentUser(null);
     setUsers([]);
     setTransactions([]);
+    setFixedCharges([]);
   };
 
   const syncSessionState = async (
@@ -482,10 +499,23 @@ export default function SaldoTrackerApp() {
       if (error) { console.error("Fout bij verversen users:", error); return; }
       if (data) setUsers(data.map((user) => mergeUserWithAvatarCache({ ...user, avatar: "" })));
 
-      const { data: transactionData, error: transactionError } = await supabase
-        .from("transactions").select("id, created_at, user_id, name, amount_change, category, season").order("created_at", { ascending: false });
+      const transactionColumns = "id, created_at, user_id, name, amount_change, category, season";
+      const withFixedCharge = await supabase
+        .from("transactions").select(`${transactionColumns}, fixed_charge_id`).order("created_at", { ascending: false });
+      // Zolang setup-vaste-lasten.sql nog niet gedraaid is bestaat fixed_charge_id nog niet.
+      const { data: transactionData, error: transactionError } = withFixedCharge.error
+        ? await supabase.from("transactions").select(transactionColumns).order("created_at", { ascending: false })
+        : withFixedCharge;
       if (transactionError) { console.error("Fout bij ophalen transacties:", transactionError); return; }
-      if (transactionData) setTransactions(transactionData);
+      if (transactionData) setTransactions(transactionData.map((transaction) => ({ fixed_charge_id: null, ...transaction })));
+
+      const { data: fixedChargeData, error: fixedChargeError } = await supabase
+        .from("fixed_charges").select("id, created_at, name").order("created_at", { ascending: false });
+      if (fixedChargeError) {
+        console.error("Fout bij ophalen vaste lasten:", fixedChargeError);
+      } else if (fixedChargeData) {
+        setFixedCharges(fixedChargeData);
+      }
       const shouldLoadAppEvents = includeAppEvents ?? Boolean(currentUser && isDev(currentUser.role));
       if (shouldLoadAppEvents) {
         const { data: appEventData, error: appEventError } = await supabase
@@ -646,6 +676,7 @@ export default function SaldoTrackerApp() {
       .channel(`saldo-live-${currentUser.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => scheduleRealtimeRefresh(true))
       .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "fixed_charges" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "app_events" }, () => {
         if (isDev(currentUser.role)) scheduleRealtimeRefresh(false);
       })
@@ -679,17 +710,61 @@ export default function SaldoTrackerApp() {
     }
     return totals;
   }, [boeteTransactions]);
+  const vasteLastenTransactions = useMemo(
+    () => transactions.filter((transaction) => transaction.category === "vaste_lasten"),
+    [transactions],
+  );
+  // De vaste lasten pot loopt door, dus dit totaal staat los van het gekozen filter.
+  const vasteLastenTotal = useMemo(
+    () => vasteLastenTransactions.reduce((sum, transaction) => sum + transaction.amount_change, 0),
+    [vasteLastenTransactions],
+  );
+  const latestFixedCharge = fixedCharges[0] ?? null;
+  const paymentFixedChargeId = addMoneyForm.fixedChargeId || latestFixedCharge?.id || "";
+  const activeFixedChargeId = selectedFixedChargeId ?? latestFixedCharge?.id ?? "";
+  const activeFixedCharge = useMemo(
+    () => fixedCharges.find((charge) => charge.id === activeFixedChargeId) ?? null,
+    [activeFixedChargeId, fixedCharges],
+  );
+  const fixedChargeNameById = useMemo(
+    () => new Map(fixedCharges.map((charge) => [charge.id, charge.name])),
+    [fixedCharges],
+  );
+  const fixedChargeTransactionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const transaction of vasteLastenTransactions) {
+      if (!transaction.fixed_charge_id) continue;
+      counts.set(transaction.fixed_charge_id, (counts.get(transaction.fixed_charge_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [vasteLastenTransactions]);
+  // Elke transactie op een post telt als betaald, ongeacht het bedrag.
+  const activeFixedChargePerUser = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const transaction of vasteLastenTransactions) {
+      if (transaction.fixed_charge_id !== activeFixedChargeId) continue;
+      totals.set(transaction.user_id, (totals.get(transaction.user_id) ?? 0) + transaction.amount_change);
+    }
+    return totals;
+  }, [activeFixedChargeId, vasteLastenTransactions]);
   const visibleUsers = useMemo(() => {
     if (activeFinanceCategory === "saldo") return sortedUsers;
+    if (activeFinanceCategory === "vaste_lasten") {
+      return [...users]
+        .filter((user) => !isAdmin(user.role))
+        .map((user) => ({ ...user, balance: activeFixedChargePerUser.get(user.id) ?? 0 }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
     return [...users]
       .filter((user) => !isAdmin(user.role))
       .map((user) => ({ ...user, balance: boeteTotalsPerUser.get(user.id) ?? 0 }))
       .sort((a, b) => b.balance - a.balance);
-  }, [activeFinanceCategory, boeteTotalsPerUser, sortedUsers, users]);
-  const filteredTransactions = useMemo(
-    () => activeFinanceCategory === "saldo" ? saldoTransactions : boeteTransactions,
-    [activeFinanceCategory, boeteTransactions, saldoTransactions],
-  );
+  }, [activeFinanceCategory, activeFixedChargePerUser, boeteTotalsPerUser, sortedUsers, users]);
+  const filteredTransactions = useMemo(() => {
+    if (activeFinanceCategory === "saldo") return saldoTransactions;
+    if (activeFinanceCategory === "vaste_lasten") return vasteLastenTransactions;
+    return boeteTransactions;
+  }, [activeFinanceCategory, boeteTransactions, saldoTransactions, vasteLastenTransactions]);
   const statsSeasons = useMemo(() => {
     const seasons = new Set<string>([getCurrentSeason()]);
     for (const transaction of saldoTransactions) seasons.add(getSeasonForDate(transaction.created_at));
@@ -703,13 +778,23 @@ export default function SaldoTrackerApp() {
     [activeStatsSeason, saldoTransactions],
   );
   const totalBalance = useMemo(() => visibleUsers.reduce((sum, user) => sum + user.balance, 0), [visibleUsers]);
-  const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : "Boetes";
-  const financeCategoryDescription = activeFinanceCategory === "saldo" ? "Teamsaldo totaal" : "Openstaande boetes totaal";
-  const adminSectionTitle = activeFinanceCategory === "saldo" ? "Saldo aanpassen" : "Boetes uitdelen";
+  const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : activeFinanceCategory === "boete" ? "Boetes" : "Vaste lasten";
+  const financeCategoryDescription = activeFinanceCategory === "saldo"
+    ? "Teamsaldo totaal"
+    : activeFinanceCategory === "boete" ? "Openstaande boetes totaal" : "Totaal gestort";
+  const financeCategoryTotal = activeFinanceCategory === "vaste_lasten" ? vasteLastenTotal : totalBalance;
+  const adminTabLabel = activeFinanceCategory === "saldo"
+    ? "Saldo aanpassen"
+    : activeFinanceCategory === "boete" ? "Boetes uitdelen" : "Betalingen";
+  const adminSectionTitle = activeFinanceCategory === "saldo"
+    ? "Saldo aanpassen"
+    : activeFinanceCategory === "boete" ? "Boetes uitdelen" : "Betaling verwerken";
   const adminSectionDescription = activeFinanceCategory === "saldo"
     ? "Selecteer 1 of meerdere gebruikers en voeg in één keer hetzelfde bedrag toe."
-    : "Selecteer 1 of meerdere gebruikers en geef in één keer hetzelfde boetebedrag.";
-  const amountInputLabel = activeFinanceCategory === "saldo" ? "Bedrag" : "Boetebedrag";
+    : activeFinanceCategory === "boete"
+      ? "Selecteer 1 of meerdere gebruikers en geef in één keer hetzelfde boetebedrag."
+      : "Kies de vaste lasten post en zet het betaalde bedrag bij de juiste personen.";
+  const amountInputLabel = activeFinanceCategory === "boete" ? "Boetebedrag" : "Bedrag";
 
   const statistics = useMemo(() => {
     const positiveTransactions = statsTransactions.filter((t) => t.amount_change > 0);
@@ -1063,10 +1148,68 @@ export default function SaldoTrackerApp() {
     }));
   };
 
+  const createFixedCharge = async () => {
+    const name = fixedChargeForm.name.trim();
+    if (!name) { setFixedChargeForm((prev) => ({ ...prev, message: "Vul een naam in." })); return; }
+
+    setIsSavingFixedCharge(true);
+    try {
+      const { data, error: insertError } = await supabase
+        .from("fixed_charges")
+        .insert({ name })
+        .select("id, created_at, name")
+        .single();
+      if (insertError || !data) {
+        console.error("Fout bij aanmaken vaste lasten:", insertError);
+        setFixedChargeForm((prev) => ({ ...prev, message: "Aanmaken van de vaste lasten is mislukt." }));
+        return;
+      }
+
+      await refreshUsers({ force: true });
+      setSelectedFixedChargeId(data.id);
+      setAddMoneyForm((prev) => ({ ...prev, fixedChargeId: data.id, message: "" }));
+      setFixedChargeForm({ name: "", message: `"${data.name}" is aangemaakt.` });
+    } finally {
+      setIsSavingFixedCharge(false);
+    }
+  };
+
+  // Een post mag alleen weg zolang er geen transacties op staan; de database blokkeert het anders ook.
+  const deleteFixedCharge = async (charge: FixedCharge) => {
+    const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
+    if (transactionCount > 0) {
+      setFixedChargeForm((prev) => ({ ...prev, message: `"${charge.name}" heeft ${transactionCount} transactie(s) en kan niet verwijderd worden.` }));
+      return;
+    }
+    if (!window.confirm(`"${charge.name}" verwijderen?`)) return;
+
+    setDeletingFixedChargeId(charge.id);
+    try {
+      const { data, error: deleteError } = await supabase
+        .from("fixed_charges").delete().eq("id", charge.id).select("id");
+      if (deleteError || !data || data.length === 0) {
+        console.error("Fout bij verwijderen vaste lasten:", deleteError);
+        setFixedChargeForm((prev) => ({ ...prev, message: `"${charge.name}" verwijderen is mislukt.` }));
+        return;
+      }
+
+      if (selectedFixedChargeId === charge.id) setSelectedFixedChargeId(null);
+      setAddMoneyForm((prev) => (prev.fixedChargeId === charge.id ? { ...prev, fixedChargeId: "" } : prev));
+      await refreshUsers({ force: true });
+      setFixedChargeForm((prev) => ({ ...prev, message: `"${charge.name}" is verwijderd.` }));
+    } finally {
+      setDeletingFixedChargeId(null);
+    }
+  };
+
   const addMoneyToSelectedUsers = async () => {
     const parsedAmount = Number(addMoneyForm.amount.replace(",", "."));
     if (addMoneyForm.selectedUserIds.length === 0) { setAddMoneyForm((prev) => ({ ...prev, message: "Selecteer minstens 1 gebruiker." })); return; }
     if (!Number.isFinite(parsedAmount)) { setAddMoneyForm((prev) => ({ ...prev, message: "Vul een geldig bedrag in." })); return; }
+    if (activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId) {
+      setAddMoneyForm((prev) => ({ ...prev, message: "Maak eerst een vaste lasten post aan." }));
+      return;
+    }
 
     for (const userId of addMoneyForm.selectedUserIds) {
       const user = users.find((u) => u.id === userId);
@@ -1084,6 +1227,7 @@ export default function SaldoTrackerApp() {
           amount_change: parsedAmount,
           category: activeFinanceCategory,
           season: activeFinanceCategory === "boete" ? selectedSeason : getCurrentSeason(),
+          fixed_charge_id: activeFinanceCategory === "vaste_lasten" ? paymentFixedChargeId : null,
         });
       if (transactionError) { setAddMoneyForm((prev) => ({ ...prev, message: "Transactie opslaan mislukt." })); return; }
     }
@@ -1092,9 +1236,12 @@ export default function SaldoTrackerApp() {
     setAddMoneyForm({
       selectedUserIds: [],
       amount: "",
+      fixedChargeId: addMoneyForm.fixedChargeId,
       message: activeFinanceCategory === "saldo"
         ? `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`
-        : `€ ${parsedAmount.toFixed(2)} boete gegeven aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`,
+        : activeFinanceCategory === "boete"
+          ? `€ ${parsedAmount.toFixed(2)} boete gegeven aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`
+          : `€ ${parsedAmount.toFixed(2)} verwerkt voor ${addMoneyForm.selectedUserIds.length} gebruiker(s) op "${fixedChargeNameById.get(paymentFixedChargeId) ?? "vaste lasten"}".`,
     });
   };
 
@@ -1243,6 +1390,7 @@ export default function SaldoTrackerApp() {
                       >
                         <option value="saldo">Saldo</option>
                         <option value="boete">Boetes</option>
+                        <option value="vaste_lasten">Vaste lasten</option>
                       </select>
                       {activeFinanceCategory === "boete" ? (
                         <>
@@ -1260,19 +1408,19 @@ export default function SaldoTrackerApp() {
                         </>
                       ) : null}
                       <CardTitle className="mt-3 text-xl">{financeCategoryLabel}</CardTitle>
-                      <p className="mt-1 text-sm text-slate-500">{financeCategoryDescription}: {euro(totalBalance)}</p>
+                      <p className="mt-1 text-sm text-slate-500">{financeCategoryDescription}: {euro(financeCategoryTotal)}</p>
                     </div>
                     <div className="flex flex-col gap-3 sm:items-end">
                       {isAdmin(currentUser.role) ? (
                         <Badge variant="secondary" className="w-fit rounded-full px-3 py-1">
                           <ShieldCheck className="mr-1 h-4 w-4" />
-                          {activeFinanceCategory === "saldo" ? "Admin kan saldo&apos;s aanpassen" : "Admin kan boetes uitdelen"}
+                          {activeFinanceCategory === "saldo" ? "Admin kan saldo&apos;s aanpassen" : activeFinanceCategory === "boete" ? "Admin kan boetes uitdelen" : "Admin kan vaste lasten verwerken"}
                         </Badge>
                       ) : null}
                       <TabsList className={`grid rounded-2xl w-full ${isAdmin(currentUser.role) ? "grid-cols-3 sm:w-[420px]" : "grid-cols-2 sm:w-[300px]"}`}>
                         <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
                         <TabsTrigger value="transacties">Transacties</TabsTrigger>
-                        {isAdmin(currentUser.role) ? <TabsTrigger value="toevoegen">{activeFinanceCategory === "saldo" ? "Saldo aanpassen" : "Boetes uitdelen"}</TabsTrigger> : null}
+                        {isAdmin(currentUser.role) ? <TabsTrigger value="toevoegen">{adminTabLabel}</TabsTrigger> : null}
                       </TabsList>
                     </div>
                   </div>
@@ -1280,27 +1428,67 @@ export default function SaldoTrackerApp() {
 
                 <CardContent>
                   <TabsContent value="overzicht" className="mt-0">
+                    {activeFinanceCategory === "vaste_lasten" ? (
+                      <div className="mb-4">
+                        <Label htmlFor="fixed-charge-filter" className="text-xs uppercase tracking-wide text-slate-500">Vaste lasten</Label>
+                        {fixedCharges.length === 0 ? (
+                          <p className="mt-2 text-sm text-slate-500">Er is nog geen vaste lasten post aangemaakt.</p>
+                        ) : (
+                          <>
+                            <select
+                              id="fixed-charge-filter"
+                              value={activeFixedChargeId}
+                              onChange={(e) => setSelectedFixedChargeId(e.target.value)}
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[240px]"
+                            >
+                              {fixedCharges.map((charge) => (
+                                <option key={charge.id} value={charge.id}>{charge.name}</option>
+                              ))}
+                            </select>
+                            {activeFixedCharge ? (
+                              <p className="mt-2 text-sm text-slate-500">Aangemaakt op {formatDate(activeFixedCharge.created_at)}</p>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    ) : null}
                     <div className="overflow-hidden rounded-2xl border bg-white">
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Profiel</TableHead>
+                            {activeFinanceCategory === "vaste_lasten" ? null : <TableHead>Profiel</TableHead>}
                             <TableHead>Naam</TableHead>
-                            <TableHead className="text-right">{financeCategoryLabel}</TableHead>
+                            <TableHead className="text-right">{activeFinanceCategory === "vaste_lasten" ? "Bedrag" : financeCategoryLabel}</TableHead>
+                            {activeFinanceCategory === "vaste_lasten" ? <TableHead className="text-right">Betaald</TableHead> : null}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {visibleUsers.map((user) => (
                             <TableRow key={user.id}>
-                              <TableCell>
-                                <button type="button" onClick={() => setSelectedUser(user)} className="rounded-full">
-                                  <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
-                                </button>
-                              </TableCell>
+                              {activeFinanceCategory === "vaste_lasten" ? null : (
+                                <TableCell>
+                                  <button type="button" onClick={() => setSelectedUser(user)} className="rounded-full">
+                                    <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
+                                  </button>
+                                </TableCell>
+                              )}
                               <TableCell className="font-medium">{user.name}</TableCell>
                               <TableCell className="text-right font-semibold">
                                 <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
                               </TableCell>
+                              {activeFinanceCategory === "vaste_lasten" ? (
+                                <TableCell className="text-right">
+                                  <span className="inline-flex justify-end">
+                                    {activeFixedChargePerUser.has(user.id) ? (
+                                      <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500" aria-label="Betaald">
+                                        <Check className="h-4 w-4 text-white" />
+                                      </span>
+                                    ) : (
+                                      <span className="block h-6 w-6 rounded-md border-2 border-slate-300" aria-label="Nog niet betaald" />
+                                    )}
+                                  </span>
+                                </TableCell>
+                              ) : null}
                             </TableRow>
                           ))}
                         </TableBody>
@@ -1317,21 +1505,27 @@ export default function SaldoTrackerApp() {
                             <TableRow>
                               <TableHead>Datum</TableHead>
                               <TableHead>Naam</TableHead>
+                              {activeFinanceCategory === "vaste_lasten" ? <TableHead>Vaste last</TableHead> : null}
                               <TableHead className="text-right">Bedrag</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {filteredTransactions.length === 0 ? (
                               <TableRow>
-                                <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
+                                <TableCell colSpan={activeFinanceCategory === "vaste_lasten" ? 4 : 3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
                               </TableRow>
                             ) : (
                               filteredTransactions.map((transaction) => (
                                 <TableRow key={transaction.id}>
                                   <TableCell>{formatDate(transaction.created_at)}</TableCell>
                                   <TableCell className="font-medium">{transaction.name}</TableCell>
+                                  {activeFinanceCategory === "vaste_lasten" ? (
+                                    <TableCell className="text-slate-600">
+                                      {transaction.fixed_charge_id ? fixedChargeNameById.get(transaction.fixed_charge_id) ?? "Onbekend" : "—"}
+                                    </TableCell>
+                                  ) : null}
                                   <TableCell className={`text-right font-semibold ${activeFinanceCategory === "boete" ? "text-red-600" : "text-slate-900"}`}>
-                                    {transaction.amount_change > 0 && activeFinanceCategory === "saldo" ? "+" : ""}{euro(transaction.amount_change)}
+                                    {transaction.amount_change > 0 && activeFinanceCategory !== "boete" ? "+" : ""}{euro(transaction.amount_change)}
                                   </TableCell>
                                 </TableRow>
                               ))
@@ -1345,6 +1539,62 @@ export default function SaldoTrackerApp() {
                   {isAdmin(currentUser.role) ? (
                     <TabsContent value="toevoegen" className="mt-0">
                       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+                        {activeFinanceCategory === "vaste_lasten" ? (
+                          <Card className="rounded-2xl border shadow-none lg:col-span-2">
+                            <CardContent className="p-5">
+                              <div className="space-y-2">
+                                <h3 className="text-lg font-semibold">Nieuwe vaste lasten aanmaken</h3>
+                                <p className="text-sm text-slate-500">Elke seizoenshelft maak je een nieuwe post aan met een naam.</p>
+                              </div>
+                              <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+                                <div className="space-y-2">
+                                  <Label htmlFor="fixed-charge-name">Naam</Label>
+                                  <Input
+                                    id="fixed-charge-name" value={fixedChargeForm.name}
+                                    onChange={(e) => setFixedChargeForm((prev) => ({ ...prev, name: e.target.value, message: "" }))}
+                                    placeholder="Naam van vaste lasten post" className="h-12 rounded-2xl"
+                                  />
+                                </div>
+                                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 rounded-2xl">
+                                  <PlusCircle className="mr-2 h-4 w-4" />
+                                  {isSavingFixedCharge ? "Aanmaken..." : "Aanmaken"}
+                                </Button>
+                              </div>
+                              {fixedChargeForm.message ? (
+                                <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
+                              ) : null}
+                              {fixedCharges.length > 0 ? (
+                                <div className="mt-5 space-y-2">
+                                  <Label>Bestaande posten</Label>
+                                  {fixedCharges.map((charge) => {
+                                    const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
+                                    const isDeleting = deletingFixedChargeId === charge.id;
+                                    return (
+                                      <div key={charge.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
+                                        <div className="min-w-0">
+                                          <p className="truncate font-medium text-slate-900">{charge.name}</p>
+                                          <p className="text-sm text-slate-500">
+                                            {transactionCount === 0 ? "Nog geen transacties" : `${transactionCount} ${transactionCount === 1 ? "transactie" : "transacties"}`}
+                                            {" · "}aangemaakt op {formatDate(charge.created_at)}
+                                          </p>
+                                        </div>
+                                        <Button
+                                          type="button" variant="outline" className="shrink-0 rounded-2xl"
+                                          disabled={transactionCount > 0 || isDeleting}
+                                          onClick={() => deleteFixedCharge(charge)}
+                                        >
+                                          <Trash2 className="mr-2 h-4 w-4" />
+                                          {isDeleting ? "Bezig..." : "Verwijderen"}
+                                        </Button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+
                         <Card className="rounded-2xl border shadow-none">
                           <CardContent className="p-5">
                             <div className="space-y-2">
@@ -1352,6 +1602,25 @@ export default function SaldoTrackerApp() {
                               <p className="text-sm text-slate-500">{adminSectionDescription}</p>
                             </div>
                             <div className="mt-5 space-y-4">
+                              {activeFinanceCategory === "vaste_lasten" ? (
+                                <div className="space-y-2">
+                                  <Label htmlFor="payment-fixed-charge">Vaste lasten post</Label>
+                                  {fixedCharges.length === 0 ? (
+                                    <p className="text-sm text-slate-500">Maak hierboven eerst een vaste lasten post aan.</p>
+                                  ) : (
+                                    <select
+                                      id="payment-fixed-charge"
+                                      value={paymentFixedChargeId}
+                                      onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, fixedChargeId: e.target.value, message: "" }))}
+                                      className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                                    >
+                                      {fixedCharges.map((charge) => (
+                                        <option key={charge.id} value={charge.id}>{charge.name}</option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                              ) : null}
                               <div className="space-y-2">
                                 <Label>Gebruikers selecteren</Label>
                                 <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border p-3">
@@ -1367,7 +1636,7 @@ export default function SaldoTrackerApp() {
                                           <div>
                                             <p className="font-medium">{user.name}</p>
                                             <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>
-                                              {activeFinanceCategory === "saldo" ? "Huidig saldo" : "Openstaande boetes"}: {euro(user.balance)}
+                                              {activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Openstaande boetes" : "Betaald voor deze post"}: {euro(user.balance)}
                                             </p>
                                           </div>
                                         </div>
@@ -1384,12 +1653,12 @@ export default function SaldoTrackerApp() {
                                 <Input
                                   id="amount" type="number" step="0.01" value={addMoneyForm.amount}
                                   onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
-                                  placeholder={activeFinanceCategory === "saldo" ? "Bijv. 10,50" : "Bijv. 5,00"} className="h-12 rounded-2xl"
+                                  placeholder={activeFinanceCategory === "boete" ? "Bijv. 5,00" : "Bijv. 10,50"} className="h-12 rounded-2xl"
                                 />
                               </div>
                               <Button onClick={addMoneyToSelectedUsers} className="h-12 rounded-2xl">
                                 <PlusCircle className="mr-2 h-4 w-4" />
-                                {activeFinanceCategory === "saldo" ? "Toevoegen" : "Boete geven"}
+                                {activeFinanceCategory === "saldo" ? "Toevoegen" : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
                               </Button>
                               {addMoneyForm.message ? (
                                 <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
@@ -1715,7 +1984,7 @@ export default function SaldoTrackerApp() {
               </div>
               <div className="space-y-3 rounded-2xl bg-slate-50 p-4 text-left">
                 <p className="text-base text-slate-700">
-                  <span className="font-semibold text-slate-900">{activeFinanceCategory === "saldo" ? "Huidig saldo:" : "Openstaande boetes:"}</span> {euro(selectedUser.balance)}
+                  <span className="font-semibold text-slate-900">{activeFinanceCategory === "saldo" ? "Huidig saldo:" : activeFinanceCategory === "boete" ? "Openstaande boetes:" : "Betaald voor deze post:"}</span> {euro(selectedUser.balance)}
                 </p>
                 {activeFinanceCategory === "saldo" ? (
                   <p className="text-base text-slate-700"><span className="font-semibold text-slate-900">Totaal uitgegeven:</span> {euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}</p>
