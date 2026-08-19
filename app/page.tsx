@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, Car, BarChart3, Check, Trash2 } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, Car, BarChart3, Check, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -383,6 +383,8 @@ export default function SaldoTrackerApp() {
   const [isSavingFixedCharge, setIsSavingFixedCharge] = useState(false);
   const [deletingFixedChargeId, setDeletingFixedChargeId] = useState<string | null>(null);
   const [isFixedChargeModalOpen, setIsFixedChargeModalOpen] = useState(false);
+  const [potPaymentForm, setPotPaymentForm] = useState({ amount: "", message: "" });
+  const [isSavingPotPayment, setIsSavingPotPayment] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState(getCurrentSeason);
   const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? getCurrentSeason());
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
@@ -783,7 +785,7 @@ export default function SaldoTrackerApp() {
   const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : activeFinanceCategory === "boete" ? "Boetes" : "Vaste lasten";
   const financeCategoryDescription = activeFinanceCategory === "saldo"
     ? "Teamsaldo totaal"
-    : activeFinanceCategory === "boete" ? "Openstaande boetes totaal" : "Totaal gestort";
+    : activeFinanceCategory === "boete" ? "Openstaande boetes totaal" : "Totaal saldo";
   const financeCategoryTotal = activeFinanceCategory === "vaste_lasten" ? vasteLastenTotal : totalBalance;
   const adminTabLabel = activeFinanceCategory === "saldo"
     ? "Saldo aanpassen"
@@ -1204,10 +1206,46 @@ export default function SaldoTrackerApp() {
     }
   };
 
+  // Geld dat uit de pot is uitgegeven: niet op naam van een speler en niet gekoppeld aan een post.
+  const addPotPayment = async () => {
+    const parsedAmount = Number(potPaymentForm.amount.replace(",", "."));
+    if (!Number.isFinite(parsedAmount) || parsedAmount === 0) {
+      setPotPaymentForm((prev) => ({ ...prev, message: "Vul een geldig bedrag in." }));
+      return;
+    }
+
+    const amountChange = -Math.abs(parsedAmount);
+    setIsSavingPotPayment(true);
+    try {
+      const { error: transactionError } = await supabase.from("transactions").insert({
+        user_id: null,
+        name: "Vaste lasten",
+        amount_change: amountChange,
+        category: "vaste_lasten",
+        season: getCurrentSeason(),
+        fixed_charge_id: null,
+      });
+      if (transactionError) {
+        console.error("Fout bij verwerken uitgave vaste lasten:", transactionError);
+        setPotPaymentForm((prev) => ({ ...prev, message: "Uitgave verwerken is mislukt." }));
+        return;
+      }
+
+      await refreshUsers({ force: true });
+      setPotPaymentForm({ amount: "", message: `${euro(Math.abs(amountChange))} uit de vaste lasten pot geboekt.` });
+    } finally {
+      setIsSavingPotPayment(false);
+    }
+  };
+
   const addMoneyToSelectedUsers = async () => {
     const parsedAmount = Number(addMoneyForm.amount.replace(",", "."));
     if (addMoneyForm.selectedUserIds.length === 0) { setAddMoneyForm((prev) => ({ ...prev, message: "Selecteer minstens 1 gebruiker." })); return; }
     if (!Number.isFinite(parsedAmount)) { setAddMoneyForm((prev) => ({ ...prev, message: "Vul een geldig bedrag in." })); return; }
+    if (activeFinanceCategory === "vaste_lasten" && parsedAmount <= 0) {
+      setAddMoneyForm((prev) => ({ ...prev, message: "Vul een positief bedrag in. Geld uit de pot boek je bij Betalingen uit vaste lasten." }));
+      return;
+    }
     if (activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId) {
       setAddMoneyForm((prev) => ({ ...prev, message: fixedCharges.length === 0 ? "Maak eerst een vaste lasten post aan." : "Kies eerst een vaste lasten post." }));
       return;
@@ -1461,8 +1499,9 @@ export default function SaldoTrackerApp() {
                             <TableRow>
                               {activeFinanceCategory === "vaste_lasten" ? null : <TableHead>Profiel</TableHead>}
                               <TableHead>Naam</TableHead>
-                              <TableHead className="text-right">{activeFinanceCategory === "vaste_lasten" ? "Bedrag" : financeCategoryLabel}</TableHead>
-                              {activeFinanceCategory === "vaste_lasten" ? <TableHead className="text-right">Betaald</TableHead> : null}
+                              {activeFinanceCategory === "vaste_lasten"
+                                ? <TableHead className="text-right">Betaald</TableHead>
+                                : <TableHead className="text-right">{financeCategoryLabel}</TableHead>}
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -1476,9 +1515,11 @@ export default function SaldoTrackerApp() {
                                   </TableCell>
                                 )}
                                 <TableCell className="font-medium">{user.name}</TableCell>
-                                <TableCell className="text-right font-semibold">
-                                  <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
-                                </TableCell>
+                                {activeFinanceCategory === "vaste_lasten" ? null : (
+                                  <TableCell className="text-right font-semibold">
+                                    <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
+                                  </TableCell>
+                                )}
                                 {activeFinanceCategory === "vaste_lasten" ? (
                                   <TableCell className="text-right">
                                     <span className="inline-flex justify-end">
@@ -1509,25 +1550,19 @@ export default function SaldoTrackerApp() {
                             <TableRow>
                               <TableHead>Datum</TableHead>
                               <TableHead>Naam</TableHead>
-                              {activeFinanceCategory === "vaste_lasten" ? <TableHead>Vaste last</TableHead> : null}
                               <TableHead className="text-right">Bedrag</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {filteredTransactions.length === 0 ? (
                               <TableRow>
-                                <TableCell colSpan={activeFinanceCategory === "vaste_lasten" ? 4 : 3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
+                                <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
                               </TableRow>
                             ) : (
                               filteredTransactions.map((transaction) => (
                                 <TableRow key={transaction.id}>
                                   <TableCell>{formatDate(transaction.created_at)}</TableCell>
                                   <TableCell className="font-medium">{transaction.name}</TableCell>
-                                  {activeFinanceCategory === "vaste_lasten" ? (
-                                    <TableCell className="text-slate-600">
-                                      {transaction.fixed_charge_id ? fixedChargeNameById.get(transaction.fixed_charge_id) ?? "Onbekend" : "—"}
-                                    </TableCell>
-                                  ) : null}
                                   <TableCell className={`text-right font-semibold ${activeFinanceCategory === "boete" ? "text-red-600" : "text-slate-900"}`}>
                                     {transaction.amount_change > 0 && activeFinanceCategory !== "boete" ? "+" : ""}{euro(transaction.amount_change)}
                                   </TableCell>
@@ -1612,7 +1647,7 @@ export default function SaldoTrackerApp() {
                               <div className="space-y-2">
                                 <Label htmlFor="amount">{amountInputLabel}</Label>
                                 <Input
-                                  id="amount" type="number" step="0.01" value={addMoneyForm.amount}
+                                  id="amount" type="number" step="0.01" min={activeFinanceCategory === "vaste_lasten" ? "0" : undefined} value={addMoneyForm.amount}
                                   onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
                                   placeholder={activeFinanceCategory === "boete" ? "Bijv. 5,00" : "Bijv. 10,50"} className="h-12 rounded-2xl"
                                 />
@@ -1652,6 +1687,34 @@ export default function SaldoTrackerApp() {
                             </div>
                           </CardContent>
                         </Card>
+
+                        {activeFinanceCategory === "vaste_lasten" ? (
+                          <Card className="rounded-2xl border shadow-none lg:col-span-2">
+                            <CardContent className="p-5">
+                              <div className="space-y-2">
+                                <h3 className="text-lg font-semibold">Betalingen uit vaste lasten</h3>
+                                <p className="text-sm text-slate-500">Geld dat uit de pot is uitgegeven. Dit gaat van het totale saldo af en staat niet op naam van een speler.</p>
+                              </div>
+                              <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+                                <div className="space-y-2">
+                                  <Label htmlFor="pot-payment-amount">Uitgegeven bedrag</Label>
+                                  <Input
+                                    id="pot-payment-amount" type="number" step="0.01" value={potPaymentForm.amount}
+                                    onChange={(e) => setPotPaymentForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
+                                    placeholder="Bijv. 120,00" className="h-12 rounded-2xl"
+                                  />
+                                </div>
+                                <Button onClick={addPotPayment} disabled={isSavingPotPayment} className="h-12 rounded-2xl">
+                                  <MinusCircle className="mr-2 h-4 w-4" />
+                                  {isSavingPotPayment ? "Verwerken..." : "Uitgave verwerken"}
+                                </Button>
+                              </div>
+                              {potPaymentForm.message ? (
+                                <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{potPaymentForm.message}</div>
+                              ) : null}
+                            </CardContent>
+                          </Card>
+                        ) : null}
                       </div>
                     </TabsContent>
                   ) : null}
