@@ -382,6 +382,7 @@ export default function SaldoTrackerApp() {
   const [fixedChargeForm, setFixedChargeForm] = useState({ name: "", message: "" });
   const [isSavingFixedCharge, setIsSavingFixedCharge] = useState(false);
   const [deletingFixedChargeId, setDeletingFixedChargeId] = useState<string | null>(null);
+  const [isFixedChargeModalOpen, setIsFixedChargeModalOpen] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState(getCurrentSeason);
   const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? getCurrentSeason());
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
@@ -720,7 +721,8 @@ export default function SaldoTrackerApp() {
     [vasteLastenTransactions],
   );
   const latestFixedCharge = fixedCharges[0] ?? null;
-  const paymentFixedChargeId = addMoneyForm.fixedChargeId || latestFixedCharge?.id || "";
+  // Bewust geen standaardkeuze: de admin moet zelf een post kiezen voor hij een betaling verwerkt.
+  const paymentFixedChargeId = addMoneyForm.fixedChargeId;
   const activeFixedChargeId = selectedFixedChargeId ?? latestFixedCharge?.id ?? "";
   const activeFixedCharge = useMemo(
     () => fixedCharges.find((charge) => charge.id === activeFixedChargeId) ?? null,
@@ -1207,7 +1209,7 @@ export default function SaldoTrackerApp() {
     if (addMoneyForm.selectedUserIds.length === 0) { setAddMoneyForm((prev) => ({ ...prev, message: "Selecteer minstens 1 gebruiker." })); return; }
     if (!Number.isFinite(parsedAmount)) { setAddMoneyForm((prev) => ({ ...prev, message: "Vul een geldig bedrag in." })); return; }
     if (activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId) {
-      setAddMoneyForm((prev) => ({ ...prev, message: "Maak eerst een vaste lasten post aan." }));
+      setAddMoneyForm((prev) => ({ ...prev, message: fixedCharges.length === 0 ? "Maak eerst een vaste lasten post aan." : "Kies eerst een vaste lasten post." }));
       return;
     }
 
@@ -1452,48 +1454,50 @@ export default function SaldoTrackerApp() {
                         )}
                       </div>
                     ) : null}
-                    <div className="overflow-hidden rounded-2xl border bg-white">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            {activeFinanceCategory === "vaste_lasten" ? null : <TableHead>Profiel</TableHead>}
-                            <TableHead>Naam</TableHead>
-                            <TableHead className="text-right">{activeFinanceCategory === "vaste_lasten" ? "Bedrag" : financeCategoryLabel}</TableHead>
-                            {activeFinanceCategory === "vaste_lasten" ? <TableHead className="text-right">Betaald</TableHead> : null}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {visibleUsers.map((user) => (
-                            <TableRow key={user.id}>
-                              {activeFinanceCategory === "vaste_lasten" ? null : (
-                                <TableCell>
-                                  <button type="button" onClick={() => setSelectedUser(user)} className="rounded-full">
-                                    <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
-                                  </button>
-                                </TableCell>
-                              )}
-                              <TableCell className="font-medium">{user.name}</TableCell>
-                              <TableCell className="text-right font-semibold">
-                                <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
-                              </TableCell>
-                              {activeFinanceCategory === "vaste_lasten" ? (
-                                <TableCell className="text-right">
-                                  <span className="inline-flex justify-end">
-                                    {activeFixedChargePerUser.has(user.id) ? (
-                                      <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500" aria-label="Betaald">
-                                        <Check className="h-4 w-4 text-white" />
-                                      </span>
-                                    ) : (
-                                      <span className="block h-6 w-6 rounded-md border-2 border-slate-300" aria-label="Nog niet betaald" />
-                                    )}
-                                  </span>
-                                </TableCell>
-                              ) : null}
+                    {activeFinanceCategory === "vaste_lasten" && fixedCharges.length === 0 ? null : (
+                      <div className="overflow-hidden rounded-2xl border bg-white">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              {activeFinanceCategory === "vaste_lasten" ? null : <TableHead>Profiel</TableHead>}
+                              <TableHead>Naam</TableHead>
+                              <TableHead className="text-right">{activeFinanceCategory === "vaste_lasten" ? "Bedrag" : financeCategoryLabel}</TableHead>
+                              {activeFinanceCategory === "vaste_lasten" ? <TableHead className="text-right">Betaald</TableHead> : null}
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                          </TableHeader>
+                          <TableBody>
+                            {visibleUsers.map((user) => (
+                              <TableRow key={user.id}>
+                                {activeFinanceCategory === "vaste_lasten" ? null : (
+                                  <TableCell>
+                                    <button type="button" onClick={() => setSelectedUser(user)} className="rounded-full">
+                                      <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
+                                    </button>
+                                  </TableCell>
+                                )}
+                                <TableCell className="font-medium">{user.name}</TableCell>
+                                <TableCell className="text-right font-semibold">
+                                  <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
+                                </TableCell>
+                                {activeFinanceCategory === "vaste_lasten" ? (
+                                  <TableCell className="text-right">
+                                    <span className="inline-flex justify-end">
+                                      {activeFixedChargePerUser.has(user.id) ? (
+                                        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500" aria-label="Betaald">
+                                          <Check className="h-4 w-4 text-white" />
+                                        </span>
+                                      ) : (
+                                        <span className="block h-6 w-6 rounded-md border-2 border-slate-300" aria-label="Nog niet betaald" />
+                                      )}
+                                    </span>
+                                  </TableCell>
+                                ) : null}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
                   </TabsContent>
 
                   <TabsContent value="transacties" className="mt-0">
@@ -1540,59 +1544,15 @@ export default function SaldoTrackerApp() {
                     <TabsContent value="toevoegen" className="mt-0">
                       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
                         {activeFinanceCategory === "vaste_lasten" ? (
-                          <Card className="rounded-2xl border shadow-none lg:col-span-2">
-                            <CardContent className="p-5">
-                              <div className="space-y-2">
-                                <h3 className="text-lg font-semibold">Nieuwe vaste lasten aanmaken</h3>
-                                <p className="text-sm text-slate-500">Elke seizoenshelft maak je een nieuwe post aan met een naam.</p>
-                              </div>
-                              <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
-                                <div className="space-y-2">
-                                  <Label htmlFor="fixed-charge-name">Naam</Label>
-                                  <Input
-                                    id="fixed-charge-name" value={fixedChargeForm.name}
-                                    onChange={(e) => setFixedChargeForm((prev) => ({ ...prev, name: e.target.value, message: "" }))}
-                                    placeholder="Naam van vaste lasten post" className="h-12 rounded-2xl"
-                                  />
-                                </div>
-                                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 rounded-2xl">
-                                  <PlusCircle className="mr-2 h-4 w-4" />
-                                  {isSavingFixedCharge ? "Aanmaken..." : "Aanmaken"}
-                                </Button>
-                              </div>
-                              {fixedChargeForm.message ? (
-                                <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
-                              ) : null}
-                              {fixedCharges.length > 0 ? (
-                                <div className="mt-5 space-y-2">
-                                  <Label>Bestaande posten</Label>
-                                  {fixedCharges.map((charge) => {
-                                    const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
-                                    const isDeleting = deletingFixedChargeId === charge.id;
-                                    return (
-                                      <div key={charge.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
-                                        <div className="min-w-0">
-                                          <p className="truncate font-medium text-slate-900">{charge.name}</p>
-                                          <p className="text-sm text-slate-500">
-                                            {transactionCount === 0 ? "Nog geen transacties" : `${transactionCount} ${transactionCount === 1 ? "transactie" : "transacties"}`}
-                                            {" · "}aangemaakt op {formatDate(charge.created_at)}
-                                          </p>
-                                        </div>
-                                        <Button
-                                          type="button" variant="outline" className="shrink-0 rounded-2xl"
-                                          disabled={transactionCount > 0 || isDeleting}
-                                          onClick={() => deleteFixedCharge(charge)}
-                                        >
-                                          <Trash2 className="mr-2 h-4 w-4" />
-                                          {isDeleting ? "Bezig..." : "Verwijderen"}
-                                        </Button>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              ) : null}
-                            </CardContent>
-                          </Card>
+                          <div className="lg:col-span-2">
+                            <Button
+                              type="button"
+                              onClick={() => { setFixedChargeForm((prev) => ({ ...prev, message: "" })); setIsFixedChargeModalOpen(true); }}
+                              className="h-12 w-full rounded-2xl sm:w-auto"
+                            >
+                              Post aanmaken of verwijderen
+                            </Button>
+                          </div>
                         ) : null}
 
                         <Card className="rounded-2xl border shadow-none">
@@ -1614,6 +1574,7 @@ export default function SaldoTrackerApp() {
                                       onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, fixedChargeId: e.target.value, message: "" }))}
                                       className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
                                     >
+                                      <option value="">Kies een post</option>
                                       {fixedCharges.map((charge) => (
                                         <option key={charge.id} value={charge.id}>{charge.name}</option>
                                       ))}
@@ -1656,7 +1617,11 @@ export default function SaldoTrackerApp() {
                                   placeholder={activeFinanceCategory === "boete" ? "Bijv. 5,00" : "Bijv. 10,50"} className="h-12 rounded-2xl"
                                 />
                               </div>
-                              <Button onClick={addMoneyToSelectedUsers} className="h-12 rounded-2xl">
+                              <Button
+                                onClick={addMoneyToSelectedUsers}
+                                disabled={activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId}
+                                className="h-12 rounded-2xl"
+                              >
                                 <PlusCircle className="mr-2 h-4 w-4" />
                                 {activeFinanceCategory === "saldo" ? "Toevoegen" : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
                               </Button>
@@ -1937,6 +1902,64 @@ export default function SaldoTrackerApp() {
                   <Button type="button" variant="outline" className="w-full rounded-2xl" disabled={isSavingPassword} onClick={() => setIsPasswordModalOpen(false)}>Annuleren</Button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isFixedChargeModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setIsFixedChargeModalOpen(false)}>
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="space-y-4">
+              <h2 className="text-xl font-bold text-slate-900">Post aanmaken of verwijderen</h2>
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="fixed-charge-name">Naam</Label>
+                  <Input
+                    id="fixed-charge-name" value={fixedChargeForm.name}
+                    onChange={(e) => setFixedChargeForm((prev) => ({ ...prev, name: e.target.value, message: "" }))}
+                    placeholder="Bijv. Vaste lasten najaar 2026" className="h-12 rounded-2xl"
+                  />
+                </div>
+                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 rounded-2xl">
+                  <PlusCircle className="mr-2 h-4 w-4" />
+                  {isSavingFixedCharge ? "Aanmaken..." : "Aanmaken"}
+                </Button>
+              </div>
+              {fixedChargeForm.message ? (
+                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
+              ) : null}
+              {fixedCharges.length > 0 ? (
+                <div className="space-y-2">
+                  <Label>Bestaande posten</Label>
+                  <div className="max-h-64 space-y-2 overflow-y-auto">
+                    {fixedCharges.map((charge) => {
+                      const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
+                      const isDeleting = deletingFixedChargeId === charge.id;
+                      return (
+                        <div key={charge.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium text-slate-900">{charge.name}</p>
+                            <p className="text-sm text-slate-500">
+                              {transactionCount === 0 ? "Nog geen transacties" : `${transactionCount} ${transactionCount === 1 ? "transactie" : "transacties"}`}
+                              {" · "}aangemaakt op {formatDate(charge.created_at)}
+                            </p>
+                          </div>
+                          <Button
+                            type="button" variant="outline" className="shrink-0 rounded-2xl"
+                            disabled={transactionCount > 0 || isDeleting}
+                            onClick={() => deleteFixedCharge(charge)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            {isDeleting ? "Bezig..." : "Verwijderen"}
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              <Button type="button" variant="outline" className="w-full rounded-2xl" onClick={() => setIsFixedChargeModalOpen(false)}>Sluiten</Button>
             </div>
           </div>
         </div>
