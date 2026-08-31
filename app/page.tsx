@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, Car, BarChart3, Check, Trash2 } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -30,11 +30,20 @@ type AddMoneyFormState = {
 };
 
 type RideScheduleItem = {
-  date: string;
+  id: string;
+  season: string;
+  match_date: string;
   team: string;
-  location: "uit" | "thuis" | "Thuis";
+  location: "uit" | "thuis";
   kilometers: number | null;
   riders: string[];
+};
+
+// De verantwoordelijken voor het materiaal, per maand van het seizoen.
+type MaterialDutyItem = {
+  season: string;
+  month: number;
+  persons: string[];
 };
 
 type FinanceCategory = "saldo" | "boete" | "vaste_lasten";
@@ -68,26 +77,6 @@ type AppEvent = {
 };
 type EventAggregation = "hour" | "day" | "week" | "month";
 
-// Tijdelijk hardcoded tot het rijschema uit Supabase komt.
-const rideScheduleBySeason: Record<string, RideScheduleItem[]> = {
-  "2025-2026": [
-    { date: "1/3/2026", team: "tilburg H7", location: "uit", kilometers: 34, riders: ["sewi", "bram", "olivier", "hugo"] },
-    { date: "8/3/2026", team: "Don Quishoot H3", location: "uit", kilometers: 37, riders: ["brek", "jonathan", "joost", "max"] },
-    { date: "15/3/2026", team: "Push H3", location: "thuis", kilometers: null, riders: [] },
-    { date: "22/3/2026", team: "Push H4", location: "uit", kilometers: 21, riders: ["pepijn", "sewi", "timon", "tim"] },
-    { date: "29/3/2026", team: "Rosmalen", location: "thuis", kilometers: null, riders: [] },
-    { date: "12/4/2026", team: "Were Di H4", location: "uit", kilometers: 26, riders: ["tijn", "pepijn", "hugo", "pieter"] },
-    { date: "19/4/2026", team: "Drunen", location: "Thuis", kilometers: null, riders: [] },
-    { date: "10/5/2026", team: "Best", location: "Thuis", kilometers: null, riders: [] },
-    { date: "17/5/2026", team: "Geel-Zwart", location: "uit", kilometers: 21, riders: ["tim", "timon", "pieter", "jonathan"] },
-    { date: "31/5/2026", team: "Den Bosch", location: "thuis", kilometers: null, riders: [] },
-    { date: "7/6/2026", team: "Oranje-Rood", location: "uit", kilometers: 43, riders: ["sam", "tom", "bas", "thomas"] },
-    { date: "14/6/2026", team: "tilburg H7", location: "thuis", kilometers: null, riders: [] },
-  ],
-};
-
-const rideScheduleSeasons = Object.keys(rideScheduleBySeason).sort((a, b) => b.localeCompare(a));
-
 const homeTeamName = "HC Den Bosch H6";
 
 function euro(amount: number) {
@@ -96,22 +85,24 @@ function euro(amount: number) {
 
 function getRideScheduleMatchTitle(match: RideScheduleItem) {
   const opponent = match.team || "Tegenstander";
-  return match.location.toLowerCase() === "uit" ? `${opponent} - ${homeTeamName}` : `${homeTeamName} - ${opponent}`;
+  return match.location === "uit" ? `${opponent} - ${homeTeamName}` : `${homeTeamName} - ${opponent}`;
 }
 
 const shortMonths = ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
 
-function getRideScheduleDateParts(date: string) {
-  const [day, month] = date.split("/");
-  return { day: day ?? date, month: shortMonths[Number(month) - 1] ?? "" };
+// Supabase levert een date kolom als "YYYY-MM-DD": tekstueel splitsen voorkomt tijdzoneverschuiving.
+function getRideScheduleDateParts(matchDate: string) {
+  const [, month, day] = matchDate.split("-");
+  return { day: day ? String(Number(day)) : matchDate, month: shortMonths[Number(month) - 1] ?? "" };
 }
 
-function isCurrentUserRider(rider: string, user: User | null) {
+// Zowel het rijschema als de materiaalsletjes noemen mensen bij voornaam.
+function isCurrentUserNamed(name: string, user: User | null) {
   if (!user) return false;
   const normalize = (value: string) => value.trim().toLowerCase();
-  const riderName = normalize(rider);
+  const listedName = normalize(name);
   const fullName = normalize(user.name);
-  return riderName === normalize(user.username) || riderName === fullName || riderName === fullName.split(" ")[0];
+  return listedName === normalize(user.username) || listedName === fullName || listedName === fullName.split(" ")[0];
 }
 
 function formatDate(dateString: string) {
@@ -157,6 +148,30 @@ function getSeasonForDate(date: Date | string) {
 
 function getCurrentSeason() {
   return getSeasonForDate(new Date());
+}
+
+// Tijdelijk hardcoded tot de materiaalsletjes uit Supabase komen.
+// December en januari staan er bewust niet in: die maanden is er geen indeling.
+const materialDuties: MaterialDutyItem[] = [
+  { season: "2026-2027", month: 9, persons: ["joost", "thomas", "tom"] },
+  { season: "2026-2027", month: 10, persons: ["pieter", "bas"] },
+  { season: "2026-2027", month: 11, persons: ["jonathan", "juriaan", "sewi"] },
+  { season: "2026-2027", month: 2, persons: ["tim", "matthijs", "sam"] },
+  { season: "2026-2027", month: 3, persons: ["tim", "matthijs", "sam"] },
+  { season: "2026-2027", month: 4, persons: ["timon", "pepijn"] },
+  { season: "2026-2027", month: 5, persons: ["hugo", "tijn"] },
+  { season: "2026-2027", month: 6, persons: ["olivier", "brek"] },
+];
+
+// Augustus t/m december horen bij het eerste kalenderjaar van het seizoen, januari t/m juli bij het tweede.
+function getMaterialDutyYear(season: string, month: number) {
+  const [startYear, endYear] = season.split("-");
+  return month > seasonStartMonth ? startYear : endYear;
+}
+
+// Sorteren op seizoensvolgorde: augustus voorop, juli achteraan.
+function getMaterialDutyMonthOrder(month: number) {
+  return (month - seasonStartMonth - 1 + 12) % 12;
 }
 
 function sanitizeUsername(username: string) {
@@ -386,7 +401,8 @@ export default function SaldoTrackerApp() {
   const [potPaymentForm, setPotPaymentForm] = useState({ amount: "", message: "" });
   const [isSavingPotPayment, setIsSavingPotPayment] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState(getCurrentSeason);
-  const [selectedRideSeason, setSelectedRideSeason] = useState(rideScheduleSeasons[0] ?? getCurrentSeason());
+  const [rideScheduleItems, setRideScheduleItems] = useState<RideScheduleItem[]>([]);
+  const [selectedRideSeason, setSelectedRideSeason] = useState(getCurrentSeason);
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "" });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -519,6 +535,14 @@ export default function SaldoTrackerApp() {
       } else if (fixedChargeData) {
         setFixedCharges(fixedChargeData);
       }
+      const { data: rideScheduleData, error: rideScheduleError } = await supabase
+        .from("ride_schedule").select("id, season, match_date, team, location, kilometers, riders").order("match_date", { ascending: true });
+      if (rideScheduleError) {
+        console.error("Fout bij ophalen rijschema:", rideScheduleError);
+      } else if (rideScheduleData) {
+        setRideScheduleItems(rideScheduleData.map((item) => ({ ...item, riders: item.riders ?? [] })));
+      }
+
       const shouldLoadAppEvents = includeAppEvents ?? Boolean(currentUser && isDev(currentUser.role));
       if (shouldLoadAppEvents) {
         const { data: appEventData, error: appEventError } = await supabase
@@ -680,6 +704,7 @@ export default function SaldoTrackerApp() {
       .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => scheduleRealtimeRefresh(true))
       .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "fixed_charges" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "ride_schedule" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "app_events" }, () => {
         if (isDev(currentUser.role)) scheduleRealtimeRefresh(false);
       })
@@ -705,7 +730,30 @@ export default function SaldoTrackerApp() {
     }
     return Array.from(seasons).sort((a, b) => b.localeCompare(a));
   }, [transactions]);
-  const rideSchedule = useMemo(() => rideScheduleBySeason[selectedRideSeason] ?? [], [selectedRideSeason]);
+  const rideScheduleSeasons = useMemo(() => {
+    const seasons = new Set<string>([getCurrentSeason()]);
+    for (const match of rideScheduleItems) seasons.add(match.season);
+    return Array.from(seasons).sort((a, b) => b.localeCompare(a));
+  }, [rideScheduleItems]);
+  const rideSchedule = useMemo(
+    () => rideScheduleItems.filter((match) => match.season === selectedRideSeason),
+    [rideScheduleItems, selectedRideSeason],
+  );
+  const materialDuty = useMemo(
+    () => materialDuties
+      .filter((duty) => duty.season === selectedRideSeason)
+      .sort((a, b) => getMaterialDutyMonthOrder(a.month) - getMaterialDutyMonthOrder(b.month)),
+    [selectedRideSeason],
+  );
+  const materialDutyPersonCount = useMemo(
+    () => new Set(materialDuty.flatMap((duty) => duty.persons)).size,
+    [materialDuty],
+  );
+  // Eenmalig bij het mounten: welke maand nu loopt bepaalt welke regel we uitlichten.
+  const currentMaterialDutyMonth = useMemo(() => {
+    const now = new Date();
+    return { season: getSeasonForDate(now), month: now.getMonth() + 1 };
+  }, []);
   const boeteTotalsPerUser = useMemo(() => {
     const totals = new Map<string, number>();
     for (const transaction of boeteTransactions) {
@@ -1723,74 +1771,128 @@ export default function SaldoTrackerApp() {
             </Card>
           </motion.div>
         ) : activeMainTab === "rijschema" ? (
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-            <Card className="rounded-3xl border-0 shadow-sm">
-              <CardHeader className="pb-2">
-                <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                <select
-                  id="ride-season-filter"
-                  value={selectedRideSeason}
-                  onChange={(e) => setSelectedRideSeason(e.target.value)}
-                  className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
-                >
-                  {rideScheduleSeasons.map((season) => (
-                    <option key={season} value={season}>{season}</option>
-                  ))}
-                </select>
-                <CardTitle className="mt-3 text-lg">Rijschema</CardTitle>
-                <p className="text-xs text-slate-500">
-                  {rideSchedule.length} wedstrijden · {rideSchedule.filter((m) => m.location.toLowerCase() === "uit").length} uit · {rideSchedule.reduce((sum, m) => sum + (m.kilometers ?? 0), 0)} km
-                </p>
-              </CardHeader>
-              <CardContent>
-                {rideSchedule.length === 0 ? (
-                  <p className="py-2 text-sm text-slate-500">Nog geen rijschema voor dit seizoen.</p>
-                ) : null}
-                <div className="divide-y divide-slate-100">
-                  {rideSchedule.map((match) => {
-                    const isAway = match.location.toLowerCase() === "uit";
-                    const { day, month } = getRideScheduleDateParts(match.date);
-                    const isUserRiding = match.riders.some((rider) => isCurrentUserRider(rider, currentUser));
+          <>
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
+              <Card className="rounded-3xl border-0 shadow-sm">
+                <CardHeader className="pb-2">
+                  <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                  <select
+                    id="ride-season-filter"
+                    value={selectedRideSeason}
+                    onChange={(e) => setSelectedRideSeason(e.target.value)}
+                    className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
+                  >
+                    {rideScheduleSeasons.map((season) => (
+                      <option key={season} value={season}>{season}</option>
+                    ))}
+                  </select>
+                  <CardTitle className="mt-3 text-lg">Rijschema</CardTitle>
+                  <p className="text-xs text-slate-500">
+                    {rideSchedule.length} wedstrijden · {rideSchedule.filter((m) => m.location === "uit").length} uit · {rideSchedule.reduce((sum, m) => sum + (m.kilometers ?? 0), 0)} km
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  {rideSchedule.length === 0 ? (
+                    <p className="py-2 text-sm text-slate-500">Nog geen rijschema voor dit seizoen.</p>
+                  ) : null}
+                  <div className="divide-y divide-slate-100">
+                    {rideSchedule.map((match) => {
+                      const isAway = match.location === "uit";
+                      const { day, month } = getRideScheduleDateParts(match.match_date);
+                      const isUserRiding = match.riders.some((rider) => isCurrentUserNamed(rider, currentUser));
 
-                    return (
-                      <div
-                        key={`${match.date}-${match.team}`}
-                        className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "-mx-2 rounded-lg bg-slate-900/5 px-2" : ""}`}
-                      >
-                        <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
-                          <div className="text-[13px] font-semibold leading-none">{day}</div>
-                          <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
+                      return (
+                        <div
+                          key={match.id}
+                          className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "-mx-2 rounded-lg bg-slate-900/5 px-2" : ""}`}
+                        >
+                          <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
+                            <div className="text-[13px] font-semibold leading-none">{day}</div>
+                            <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <h3 className="text-[13px] font-semibold leading-tight text-slate-900">{getRideScheduleMatchTitle(match)}</h3>
+                            {match.riders.length > 0 ? (
+                              <p className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] leading-tight text-slate-500">
+                                {match.riders.map((rider, index) => (
+                                  <Fragment key={`${rider}-${index}`}>
+                                    {isCurrentUserNamed(rider, currentUser) ? (
+                                      <span className="rounded bg-slate-900 px-1 py-px font-semibold text-white">{rider}</span>
+                                    ) : (
+                                      <span>{rider}</span>
+                                    )}
+                                    {index < match.riders.length - 1 ? <span className="text-slate-300">·</span> : null}
+                                  </Fragment>
+                                ))}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <span className={`text-[9px] font-semibold uppercase tracking-wide ${isAway ? "text-slate-900" : "text-slate-400"}`}>{isAway ? "Uit" : "Thuis"}</span>
+                            {match.kilometers !== null ? (
+                              <div className="text-[11px] font-medium tabular-nums leading-tight text-slate-500">{match.kilometers} km</div>
+                            ) : null}
+                          </div>
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <h3 className="text-[13px] font-semibold leading-tight text-slate-900">{getRideScheduleMatchTitle(match)}</h3>
-                          {match.riders.length > 0 ? (
-                            <p className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] leading-tight text-slate-500">
-                              {match.riders.map((rider, index) => (
-                                <Fragment key={`${rider}-${index}`}>
-                                  {isCurrentUserRider(rider, currentUser) ? (
-                                    <span className="rounded bg-slate-900 px-1 py-px font-semibold text-white">{rider}</span>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.1 }}>
+              <Card className="rounded-3xl border-0 shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Materiaalsletjes</CardTitle>
+                  <p className="text-xs text-slate-500">
+                    {materialDuty.length} maanden · {materialDutyPersonCount} personen
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  {materialDuty.length === 0 ? (
+                    <p className="py-2 text-sm text-slate-500">Nog geen materiaalsletjes voor dit seizoen.</p>
+                  ) : null}
+                  <div className="divide-y divide-slate-100">
+                    {materialDuty.map((duty) => {
+                      const isCurrentMonth = duty.season === currentMaterialDutyMonth.season && duty.month === currentMaterialDutyMonth.month;
+                      const isUserOnDuty = duty.persons.some((person) => isCurrentUserNamed(person, currentUser));
+
+                      return (
+                        <div
+                          key={`${duty.season}-${duty.month}`}
+                          className={`flex items-center gap-2.5 py-2 ${isUserOnDuty ? "-mx-2 rounded-lg bg-slate-900/5 px-2" : ""}`}
+                        >
+                          <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isCurrentMonth ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
+                            <div className="text-[13px] font-semibold leading-none">{shortMonths[duty.month - 1] ?? ""}</div>
+                            <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{getMaterialDutyYear(duty.season, duty.month).slice(-2)}</div>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="flex flex-wrap items-center gap-x-1 text-[13px] font-semibold leading-tight text-slate-900">
+                              {duty.persons.map((person, index) => (
+                                <Fragment key={`${person}-${index}`}>
+                                  {isCurrentUserNamed(person, currentUser) ? (
+                                    <span className="rounded bg-slate-900 px-1 py-px text-white">{person}</span>
                                   ) : (
-                                    <span>{rider}</span>
+                                    <span>{person}</span>
                                   )}
-                                  {index < match.riders.length - 1 ? <span className="text-slate-300">·</span> : null}
+                                  {index < duty.persons.length - 1 ? <span className="font-normal text-slate-300">·</span> : null}
                                 </Fragment>
                               ))}
                             </p>
+                          </div>
+                          {isCurrentMonth ? (
+                            <div className="shrink-0 text-right">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-900">Deze maand</span>
+                            </div>
                           ) : null}
                         </div>
-                        <div className="shrink-0 text-right">
-                          <span className={`text-[9px] font-semibold uppercase tracking-wide ${isAway ? "text-slate-900" : "text-slate-400"}`}>{isAway ? "Uit" : "Thuis"}</span>
-                          {match.kilometers !== null ? (
-                            <div className="text-[11px] font-medium tabular-nums leading-tight text-slate-500">{match.kilometers} km</div>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          </>
         ) : activeMainTab === "statistieken" ? (
           <>
             <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
@@ -2088,8 +2190,8 @@ export default function SaldoTrackerApp() {
             <span className={`mt-1 text-xs ${activeMainTab === "saldo" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Saldo</span>
           </button>
           <button onClick={() => setActiveMainTab("rijschema")} className="flex w-full flex-col items-center justify-center">
-            <Car className={`transition ${activeMainTab === "rijschema" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
-            <span className={`mt-1 text-xs ${activeMainTab === "rijschema" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Rijschema</span>
+            <CalendarDays className={`transition ${activeMainTab === "rijschema" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
+            <span className={`mt-1 text-xs ${activeMainTab === "rijschema" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Schema</span>
           </button>
           <button onClick={() => setActiveMainTab("statistieken")} className="flex w-full flex-col items-center justify-center">
             <BarChart3 className={`transition ${activeMainTab === "statistieken" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
