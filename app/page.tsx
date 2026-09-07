@@ -136,6 +136,7 @@ const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.loca
 const avatarBucket = process.env.NEXT_PUBLIC_SUPABASE_AVATAR_BUCKET ?? "avatars";
 const pullRefreshMinimumDurationMs = 650;
 const allTimeSeasonValue = "alle";
+const allUsersValue = "alle";
 
 // Een seizoen loopt van 1 augustus t/m 31 juli: augustus 2026 t/m juli 2027 hoort bij "2026-2027".
 const seasonStartMonth = 7;
@@ -404,6 +405,8 @@ export default function SaldoTrackerApp() {
   const [rideScheduleItems, setRideScheduleItems] = useState<RideScheduleItem[]>([]);
   const [selectedRideSeason, setSelectedRideSeason] = useState(getCurrentSeason);
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
+  const [saldoTransactionUserFilter, setSaldoTransactionUserFilter] = useState(allUsersValue);
+  const [saldoTransactionSeasonFilter, setSaldoTransactionSeasonFilter] = useState(allTimeSeasonValue);
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "" });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
@@ -812,16 +815,41 @@ export default function SaldoTrackerApp() {
       .map((user) => ({ ...user, balance: boeteTotalsPerUser.get(user.id) ?? 0 }))
       .sort((a, b) => b.balance - a.balance);
   }, [activeFinanceCategory, activeFixedChargePerUser, boeteTotalsPerUser, sortedUsers, users]);
-  const filteredTransactions = useMemo(() => {
-    if (activeFinanceCategory === "saldo") return saldoTransactions;
-    if (activeFinanceCategory === "vaste_lasten") return vasteLastenTransactions;
-    return boeteTransactions;
-  }, [activeFinanceCategory, boeteTransactions, saldoTransactions, vasteLastenTransactions]);
+  // Seizoenen van de saldotransacties: gebruikt door zowel het transactiefilter als de statistieken.
   const statsSeasons = useMemo(() => {
     const seasons = new Set<string>([getCurrentSeason()]);
     for (const transaction of saldoTransactions) seasons.add(getSeasonForDate(transaction.created_at));
     return Array.from(seasons).sort((a, b) => b.localeCompare(a));
   }, [saldoTransactions]);
+  // Alleen gebruikers die ook echt een saldotransactie hebben: lege filteropties helpen niemand.
+  const saldoTransactionUsers = useMemo(() => {
+    const namesById = new Map(users.map((user) => [user.id, user.name]));
+    const options = new Map<string, string>();
+    for (const transaction of saldoTransactions) {
+      if (!transaction.user_id) continue;
+      options.set(transaction.user_id, namesById.get(transaction.user_id) ?? transaction.name);
+    }
+    return Array.from(options, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [saldoTransactions, users]);
+  const isSaldoTransactionFilterActive =
+    saldoTransactionUserFilter !== allUsersValue || saldoTransactionSeasonFilter !== allTimeSeasonValue;
+  const filteredSaldoTransactions = useMemo(
+    () => saldoTransactions.filter((transaction) => {
+      if (saldoTransactionUserFilter !== allUsersValue && transaction.user_id !== saldoTransactionUserFilter) return false;
+      if (saldoTransactionSeasonFilter !== allTimeSeasonValue && getSeasonForDate(transaction.created_at) !== saldoTransactionSeasonFilter) return false;
+      return true;
+    }),
+    [saldoTransactionSeasonFilter, saldoTransactionUserFilter, saldoTransactions],
+  );
+  const filteredSaldoTransactionsTotal = useMemo(
+    () => Number(filteredSaldoTransactions.reduce((sum, transaction) => sum + transaction.amount_change, 0).toFixed(2)),
+    [filteredSaldoTransactions],
+  );
+  const filteredTransactions = useMemo(() => {
+    if (activeFinanceCategory === "saldo") return filteredSaldoTransactions;
+    if (activeFinanceCategory === "vaste_lasten") return vasteLastenTransactions;
+    return boeteTransactions;
+  }, [activeFinanceCategory, boeteTransactions, filteredSaldoTransactions, vasteLastenTransactions]);
   const activeStatsSeason = selectedStatsSeason ?? statsSeasons[0] ?? allTimeSeasonValue;
   const statsTransactions = useMemo(
     () => activeStatsSeason === allTimeSeasonValue
@@ -1591,6 +1619,57 @@ export default function SaldoTrackerApp() {
 
                   <TabsContent value="transacties" className="mt-0">
                     <h3 className="mb-2 text-sm font-semibold text-slate-900">Transacties</h3>
+                    {activeFinanceCategory === "saldo" ? (
+                      <div className="mb-3 space-y-3 rounded-2xl border bg-slate-50 p-3">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div>
+                            <Label htmlFor="saldo-transaction-user-filter" className="text-xs uppercase tracking-wide text-slate-500">Gebruiker</Label>
+                            <select
+                              id="saldo-transaction-user-filter"
+                              value={saldoTransactionUserFilter}
+                              onChange={(e) => setSaldoTransactionUserFilter(e.target.value)}
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                            >
+                              <option value={allUsersValue}>Alle gebruikers</option>
+                              {saldoTransactionUsers.map((user) => (
+                                <option key={user.id} value={user.id}>{user.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <Label htmlFor="saldo-transaction-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                            <select
+                              id="saldo-transaction-season-filter"
+                              value={saldoTransactionSeasonFilter}
+                              onChange={(e) => setSaldoTransactionSeasonFilter(e.target.value)}
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                            >
+                              <option value={allTimeSeasonValue}>Alle seizoenen</option>
+                              {statsSeasons.map((season) => (
+                                <option key={season} value={season}>{season}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm text-slate-500">
+                            {filteredSaldoTransactions.length} van {saldoTransactions.length} transacties
+                            <span className="text-slate-400"> &middot; </span>
+                            totaal <span className="font-medium text-slate-900">{euro(filteredSaldoTransactionsTotal)}</span>
+                          </p>
+                          {isSaldoTransactionFilterActive ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() => { setSaldoTransactionUserFilter(allUsersValue); setSaldoTransactionSeasonFilter(allTimeSeasonValue); }}
+                              className="h-9 rounded-full px-3 text-sm"
+                            >
+                              Filters wissen
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="overflow-hidden rounded-2xl border bg-white">
                       <div className="max-h-[420px] overflow-y-auto">
                         <Table>
@@ -1604,7 +1683,11 @@ export default function SaldoTrackerApp() {
                           <TableBody>
                             {filteredTransactions.length === 0 ? (
                               <TableRow>
-                                <TableCell colSpan={3} className="text-center text-slate-500">Nog geen transacties.</TableCell>
+                                <TableCell colSpan={3} className="text-center text-slate-500">
+                                  {activeFinanceCategory === "saldo" && isSaldoTransactionFilterActive
+                                    ? "Geen transacties voor dit filter."
+                                    : "Nog geen transacties."}
+                                </TableCell>
                               </TableRow>
                             ) : (
                               filteredTransactions.map((transaction) => (
