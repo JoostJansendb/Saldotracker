@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Inter } from "next/font/google";
@@ -19,6 +19,11 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
+
+export const viewport: Viewport = {
+  themeColor: "#f3f4f6",
+  viewportFit: "cover",
+};
 
 export const metadata = {
   title: "Teamapp",

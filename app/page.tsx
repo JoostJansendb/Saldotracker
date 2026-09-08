@@ -74,6 +74,8 @@ type AppEvent = {
   event_type: AppEventType;
 };
 type EventAggregation = "hour" | "day" | "week" | "month";
+type StatsKpiKey = "count" | "total" | "average" | "largest";
+type TransactionDirection = "alle" | "bij" | "af";
 
 const homeTeamName = "HC Den Bosch H6";
 
@@ -136,6 +138,19 @@ const pullRefreshMinimumDurationMs = 650;
 const allTimeSeasonValue = "alle";
 const allUsersValue = "alle";
 const transactionPageSize = 30;
+
+const statsKpiDetailTitles: Record<StatsKpiKey, { title: string; description: string }> = {
+  count: { title: "Vaakst opgewaardeerd", description: "Top 5 op aantal opwaarderingen." },
+  total: { title: "Meest opgewaardeerd", description: "Top 5 op totaal opgewaardeerd bedrag." },
+  average: { title: "Verdeling van opwaarderingen", description: "Hoe vaak elk bedrag is opgewaardeerd." },
+  largest: { title: "Grootste opwaardeerders", description: "Top 5 op grootste losse opwaardering." },
+};
+
+const transactionDirectionOptions: Array<{ value: TransactionDirection; label: string }> = [
+  { value: "alle", label: "Alle" },
+  { value: "bij", label: "Bij" },
+  { value: "af", label: "Af" },
+];
 
 const financeCategoryOptions: Array<{ value: FinanceCategory; label: string }> = [
   { value: "saldo", label: "Saldo" },
@@ -426,6 +441,7 @@ export default function SaldoTrackerApp() {
   const [activeSaldoTab, setActiveSaldoTab] = useState<"overzicht" | "transacties" | "toevoegen">("overzicht");
   const [saldoTransactionUserFilter, setSaldoTransactionUserFilter] = useState(allUsersValue);
   const [saldoTransactionSeasonFilter, setSaldoTransactionSeasonFilter] = useState(allTimeSeasonValue);
+  const [saldoTransactionDirectionFilter, setSaldoTransactionDirectionFilter] = useState<TransactionDirection>("alle");
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "" });
   const [isProfilePageOpen, setIsProfilePageOpen] = useState(false);
   const [transactionPaging, setTransactionPaging] = useState({ listKey: "", limit: transactionPageSize });
@@ -438,6 +454,7 @@ export default function SaldoTrackerApp() {
   const [expandedStatMonths, setExpandedStatMonths] = useState<string[]>([]);
   const [expandedStatDates, setExpandedStatDates] = useState<string[]>([]);
   const [selectedStatsSeason, setSelectedStatsSeason] = useState<string | null>(null);
+  const [activeStatsKpi, setActiveStatsKpi] = useState<StatsKpiKey | null>(null);
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [addUserForm, setAddUserForm] = useState({ username: "", name: "", password: "" });
   const [addUserMessage, setAddUserMessage] = useState("");
@@ -847,14 +864,16 @@ export default function SaldoTrackerApp() {
     return Array.from(options, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [saldoTransactions, users]);
   const isSaldoTransactionFilterActive =
-    saldoTransactionUserFilter !== allUsersValue || saldoTransactionSeasonFilter !== allTimeSeasonValue;
+    saldoTransactionUserFilter !== allUsersValue || saldoTransactionSeasonFilter !== allTimeSeasonValue || saldoTransactionDirectionFilter !== "alle";
   const filteredSaldoTransactions = useMemo(
     () => saldoTransactions.filter((transaction) => {
       if (saldoTransactionUserFilter !== allUsersValue && transaction.user_id !== saldoTransactionUserFilter) return false;
       if (saldoTransactionSeasonFilter !== allTimeSeasonValue && getSeasonForDate(transaction.created_at) !== saldoTransactionSeasonFilter) return false;
+      if (saldoTransactionDirectionFilter === "bij" && transaction.amount_change <= 0) return false;
+      if (saldoTransactionDirectionFilter === "af" && transaction.amount_change >= 0) return false;
       return true;
     }),
-    [saldoTransactionSeasonFilter, saldoTransactionUserFilter, saldoTransactions],
+    [saldoTransactionDirectionFilter, saldoTransactionSeasonFilter, saldoTransactionUserFilter, saldoTransactions],
   );
   // De drie meest recente regels van de aangeklikte speler, binnen de categorie die nu open staat.
   const selectedUserTransactions = useMemo(() => {
@@ -951,7 +970,7 @@ export default function SaldoTrackerApp() {
   ];
 
   // "Meer tonen" hoort bij één specifieke lijst: zodra categorie of filter wisselt, begint de paginering opnieuw.
-  const transactionListKey = `${activeFinanceCategory}|${saldoTransactionUserFilter}|${saldoTransactionSeasonFilter}`;
+  const transactionListKey = `${activeFinanceCategory}|${saldoTransactionUserFilter}|${saldoTransactionSeasonFilter}|${saldoTransactionDirectionFilter}`;
   const transactionLimit = transactionPaging.listKey === transactionListKey ? transactionPaging.limit : transactionPageSize;
   const showMoreTransactions = () => setTransactionPaging({ listKey: transactionListKey, limit: transactionLimit + transactionPageSize });
 
@@ -1025,6 +1044,7 @@ export default function SaldoTrackerApp() {
     return { positiveCount: positiveTransactions.length, totalTopUps, averageTopUp, largestTopUp, topSpenders, monthlyTotals, dailyExpenses };
   }, [statsTransactions, users]);
 
+  // Volgt het seizoensfilter van de statistieken: gebruikt door de Kas-kanonnen.
   const totalPositivePerUser = useMemo(() => {
     const totals = new Map<string, number>();
     for (const t of statsTransactions) {
@@ -1033,6 +1053,15 @@ export default function SaldoTrackerApp() {
     }
     return totals;
   }, [statsTransactions]);
+  // Aller tijden, los van dat filter: de spelerspopup toont wat iemand in totaal heeft gestort.
+  const allTimePositivePerUser = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const t of saldoTransactions) {
+      if (t.amount_change <= 0) continue;
+      totals.set(t.user_id, (totals.get(t.user_id) ?? 0) + t.amount_change);
+    }
+    return totals;
+  }, [saldoTransactions]);
 
   const spenderChartData = useMemo(
     () => [...users]
@@ -1047,12 +1076,55 @@ export default function SaldoTrackerApp() {
     [totalPositivePerUser, users],
   );
 
-  const statisticsKpis = [
-    { label: "Opwaarderingen", value: String(statistics.positiveCount) },
-    { label: "Totaal opgewaardeerd", value: euro(statistics.totalTopUps) },
-    { label: "Gemiddelde opwaardering", value: euro(statistics.averageTopUp) },
-    { label: "Grootste opwaardering", value: euro(statistics.largestTopUp) },
+  const statisticsKpis: Array<{ key: StatsKpiKey; label: string; value: string }> = [
+    { key: "count", label: "Opwaarderingen", value: String(statistics.positiveCount) },
+    { key: "total", label: "Totaal opgewaardeerd", value: euro(statistics.totalTopUps) },
+    { key: "average", label: "Gemiddelde opwaardering", value: euro(statistics.averageTopUp) },
+    { key: "largest", label: "Grootste opwaardering", value: euro(statistics.largestTopUp) },
   ];
+
+  // Achter elke KPI-tegel zit een popup: drie ranglijsten en een histogram van de opwaarderingen.
+  const statisticsDetails = useMemo(() => {
+    const positiveTransactions = statsTransactions.filter((t) => t.amount_change > 0);
+    const perUser = new Map<string, { count: number; total: number; largest: number }>();
+    for (const t of positiveTransactions) {
+      const entry = perUser.get(t.user_id) ?? { count: 0, total: 0, largest: 0 };
+      entry.count += 1;
+      entry.total += t.amount_change;
+      entry.largest = Math.max(entry.largest, t.amount_change);
+      perUser.set(t.user_id, entry);
+    }
+    const rows = Array.from(perUser, ([userId, entry]) => {
+      const user = users.find((u) => u.id === userId) ?? null;
+      return { userId, user, name: user?.name ?? "Onbekend", ...entry };
+    });
+    const topBy = (key: "count" | "total" | "largest") => [...rows].sort((a, b) => b[key] - a[key]).slice(0, 5);
+
+    const largest = Math.max(...positiveTransactions.map((t) => t.amount_change), 0);
+    const bucketSize = 10;
+    const bucketCount = positiveTransactions.length === 0 ? 0 : Math.max(1, Math.ceil(largest / bucketSize));
+    const histogram = Array.from({ length: bucketCount }, (_, index) => ({ from: index * bucketSize, to: (index + 1) * bucketSize, count: 0 }));
+    const bucketIndexFor = (amount: number) => Math.min(Math.floor(amount / bucketSize), bucketCount - 1);
+    for (const t of positiveTransactions) histogram[bucketIndexFor(t.amount_change)].count += 1;
+    const averageTopUp = positiveTransactions.length > 0 ? positiveTransactions.reduce((sum, t) => sum + t.amount_change, 0) / positiveTransactions.length : 0;
+
+    return {
+      topByCount: topBy("count"),
+      topByTotal: topBy("total"),
+      topByLargest: topBy("largest"),
+      histogram,
+      histogramMax: Math.max(...histogram.map((bucket) => bucket.count), 1),
+      bucketSize,
+      averageBucketIndex: bucketCount === 0 ? -1 : bucketIndexFor(averageTopUp),
+    };
+  }, [statsTransactions, users]);
+  const statsKpiRanking = activeStatsKpi === "count"
+    ? statisticsDetails.topByCount
+    : activeStatsKpi === "total"
+      ? statisticsDetails.topByTotal
+      : activeStatsKpi === "largest"
+        ? statisticsDetails.topByLargest
+        : [];
   const spenderChartMax = Math.max(...spenderChartData.map((item) => item.total), 1);
 
   const joostUserIds = useMemo(
@@ -1759,6 +1831,24 @@ export default function SaldoTrackerApp() {
                             </select>
                           </div>
                         </div>
+                        <div>
+                          <Label className="text-xs uppercase tracking-wide text-slate-500">Richting</Label>
+                          <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-[#f3f4f6] p-1">
+                            {transactionDirectionOptions.map((option) => {
+                              const isActive = saldoTransactionDirectionFilter === option.value;
+                              return (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  onClick={() => setSaldoTransactionDirectionFilter(option.value)}
+                                  className={`h-9 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
+                                >
+                                  {option.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="text-sm text-slate-500">
                             {filteredSaldoTransactions.length} van {saldoTransactions.length} transacties
@@ -1769,7 +1859,7 @@ export default function SaldoTrackerApp() {
                             <Button
                               type="button"
                               variant="ghost"
-                              onClick={() => { setSaldoTransactionUserFilter(allUsersValue); setSaldoTransactionSeasonFilter(allTimeSeasonValue); }}
+                              onClick={() => { setSaldoTransactionUserFilter(allUsersValue); setSaldoTransactionSeasonFilter(allTimeSeasonValue); setSaldoTransactionDirectionFilter("alle"); }}
                               className="h-9 rounded-full px-3 text-sm"
                             >
                               Filters wissen
@@ -1932,20 +2022,6 @@ export default function SaldoTrackerApp() {
             ) : activeMainTab === "rijschema" ? (
               <>
                 <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
-                  <div className="rounded-xl bg-white p-3 shadow-sm">
-                    <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                    <select
-                      id="ride-season-filter"
-                      value={selectedRideSeason}
-                      onChange={(e) => setSelectedRideSeason(e.target.value)}
-                      className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                    >
-                      {rideScheduleSeasons.map((season) => (
-                        <option key={season} value={season}>{season}</option>
-                      ))}
-                    </select>
-                  </div>
-
                   <div className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="grid grid-cols-3 divide-x divide-slate-100 text-center">
                       <div>
@@ -1967,6 +2043,19 @@ export default function SaldoTrackerApp() {
                     <div className="flex items-center justify-between px-1">
                       <h2 className="text-sm font-semibold text-slate-900">Rijschema</h2>
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{rideSchedule.length}</span>
+                    </div>
+                    <div className="rounded-xl bg-white p-3 shadow-sm">
+                      <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                      <select
+                        id="ride-season-filter"
+                        value={selectedRideSeason}
+                        onChange={(e) => setSelectedRideSeason(e.target.value)}
+                        className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                      >
+                        {rideScheduleSeasons.map((season) => (
+                          <option key={season} value={season}>{season}</option>
+                        ))}
+                      </select>
                     </div>
                     {rideSchedule.length === 0 ? (
                       <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">Nog geen rijschema voor dit seizoen.</div>
@@ -2075,13 +2164,18 @@ export default function SaldoTrackerApp() {
 
                   <div className="grid grid-cols-2 gap-3">
                     {statisticsKpis.map((kpi) => (
-                      <div key={kpi.label} className="relative rounded-xl bg-white p-4 shadow-sm">
+                      <button
+                        key={kpi.key}
+                        type="button"
+                        onClick={() => setActiveStatsKpi(kpi.key)}
+                        className="relative rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.98]"
+                      >
                         <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-500">
                           <ArrowUpRight className="h-3.5 w-3.5" />
                         </span>
                         <p className="pr-8 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
                         <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
-                      </div>
+                      </button>
                     ))}
                   </div>
 
@@ -2337,7 +2431,7 @@ export default function SaldoTrackerApp() {
               </button>
             </div>
             <div className="mt-1 text-center">
-              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-28 w-28 ring-4 ring-[#f3f4f6]" fallbackClassName="text-2xl" />
+              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-48 w-48 ring-4 ring-[#f3f4f6]" fallbackClassName="text-4xl" />
               <p className="mt-3 text-lg font-semibold text-slate-900">{selectedUser.name}</p>
               <p className="text-sm text-slate-500">@{selectedUser.username}</p>
             </div>
@@ -2351,7 +2445,7 @@ export default function SaldoTrackerApp() {
               {activeFinanceCategory === "saldo" ? (
                 <div className="rounded-xl bg-[#f3f4f6] p-4">
                   <p className="text-xs text-slate-500">Totaal uitgegeven</p>
-                  <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">{euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}</p>
+                  <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">{euro(allTimePositivePerUser.get(selectedUser.id) ?? 0)}</p>
                 </div>
               ) : null}
             </div>
@@ -2376,6 +2470,86 @@ export default function SaldoTrackerApp() {
                 </div>
               </div>
             ) : null}
+          </motion.div>
+        </div>
+      ) : null}
+
+      {activeStatsKpi ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center" onClick={() => setActiveStatsKpi(null)}>
+          <motion.div
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">{statsKpiDetailTitles[activeStatsKpi].title}</h2>
+                <p className="mt-0.5 text-sm text-slate-500">{statsKpiDetailTitles[activeStatsKpi].description}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveStatsKpi(null)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                aria-label="Sluiten"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {activeStatsKpi === "average" ? (
+              statisticsDetails.histogram.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+              ) : (
+                <div className="mt-5">
+                  <div className="flex h-44 items-end gap-1.5">
+                    {statisticsDetails.histogram.map((bucket, index) => {
+                      const isAverageBucket = index === statisticsDetails.averageBucketIndex;
+                      const heightPercent = (bucket.count / statisticsDetails.histogramMax) * 100;
+                      return (
+                        <div key={bucket.from} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
+                          <span className={`text-[11px] font-semibold tabular-nums ${isAverageBucket ? "text-slate-900" : "text-slate-500"}`}>{bucket.count}</span>
+                          <motion.div
+                            initial={{ height: 0 }}
+                            animate={{ height: `${Math.max(heightPercent, 3)}%` }}
+                            transition={{ duration: 0.45, delay: index * 0.04 }}
+                            className={`w-full rounded-md ${isAverageBucket ? "bg-slate-900" : "bg-[#f3f4f6]"}`}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 flex gap-1.5 border-t border-slate-100 pt-2">
+                    {statisticsDetails.histogram.map((bucket, index) => (
+                      <span key={bucket.from} className={`min-w-0 flex-1 truncate text-center text-[10px] tabular-nums ${index === statisticsDetails.averageBucketIndex ? "font-semibold text-slate-900" : "text-slate-500"}`}>
+                        {bucket.from}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-center text-xs text-slate-500">
+                    Elke kolom is een bucket van {euro(statisticsDetails.bucketSize)}, het label is de ondergrens. De zwarte kolom bevat het gemiddelde van {euro(statistics.averageTopUp)}.
+                  </p>
+                </div>
+              )
+            ) : (
+              <div className="mt-4 space-y-2">
+                {statsKpiRanking.length === 0 ? (
+                  <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                ) : (
+                  statsKpiRanking.map((row, index) => (
+                    <div key={row.userId} className="flex items-center gap-3 rounded-lg bg-[#f3f4f6] px-3 py-2.5">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-600">{index + 1}</span>
+                      <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-9 w-9 shrink-0" />
+                      <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{row.name}</p>
+                      <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+                        {activeStatsKpi === "count" ? `${row.count}×` : activeStatsKpi === "total" ? euro(row.total) : euro(row.largest)}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </motion.div>
         </div>
       ) : null}

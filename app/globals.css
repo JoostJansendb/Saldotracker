@@ -124,6 +124,11 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* De app staat op een lichtgrijze ondergrond; zo krijgt ook de statusbalk op iOS die kleur. */
+  html,
+  body {
+    background-color: #f3f4f6;
+  }
   html {
     @apply font-sans;
   }
