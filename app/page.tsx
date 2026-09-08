@@ -7,10 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2 } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, Users, ArrowLeftRight, Plus, ArrowDownLeft, ArrowUpRight, Receipt, X } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -137,6 +135,27 @@ const avatarBucket = process.env.NEXT_PUBLIC_SUPABASE_AVATAR_BUCKET ?? "avatars"
 const pullRefreshMinimumDurationMs = 650;
 const allTimeSeasonValue = "alle";
 const allUsersValue = "alle";
+const transactionPageSize = 30;
+
+const financeCategoryOptions: Array<{ value: FinanceCategory; label: string }> = [
+  { value: "saldo", label: "Saldo" },
+  { value: "boete", label: "Boetes" },
+  { value: "vaste_lasten", label: "Vaste lasten" },
+];
+
+// Het grote bedrag op de KPI-kaart: de centen lichter, zoals in een bank-app.
+function splitEuro(amount: number) {
+  const formatted = euro(amount);
+  const separatorIndex = formatted.lastIndexOf(",");
+  if (separatorIndex === -1) return { main: formatted, cents: "" };
+  return { main: formatted.slice(0, separatorIndex), cents: formatted.slice(separatorIndex) };
+}
+
+function getTransactionKindLabel(transaction: Transaction) {
+  if (transaction.category === "boete") return "Boete";
+  if (transaction.category === "vaste_lasten") return transaction.user_id ? "Betaling" : "Uitgave uit de pot";
+  return transaction.amount_change >= 0 ? "Opwaardering" : "Uitgave";
+}
 
 // Een seizoen loopt van 1 augustus t/m 31 juli: augustus 2026 t/m juli 2027 hoort bij "2026-2027".
 const seasonStartMonth = 7;
@@ -335,7 +354,7 @@ const UsageLineChart = React.memo(function UsageLineChart({
 
   return (
     <div className="space-y-3">
-      <div className="h-64 w-full rounded-2xl border border-slate-200 bg-white p-3">
+      <div className="h-64 w-full rounded-xl border border-slate-200 bg-white p-3">
         <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Gebruiksstatistieken grafiek">
           {tickValues.map((tick) => {
             const y = paddingTop + graphHeight - (tick / maxValue) * graphHeight;
@@ -408,7 +427,8 @@ export default function SaldoTrackerApp() {
   const [saldoTransactionUserFilter, setSaldoTransactionUserFilter] = useState(allUsersValue);
   const [saldoTransactionSeasonFilter, setSaldoTransactionSeasonFilter] = useState(allTimeSeasonValue);
   const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "" });
-  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isProfilePageOpen, setIsProfilePageOpen] = useState(false);
+  const [transactionPaging, setTransactionPaging] = useState({ listKey: "", limit: transactionPageSize });
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [currentPasswordForChange, setCurrentPasswordForChange] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -426,7 +446,6 @@ export default function SaldoTrackerApp() {
   const [excludeJoostEvents, setExcludeJoostEvents] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const userModalRef = useRef<HTMLDivElement | null>(null);
   const refreshUsersPromiseRef = useRef<Promise<void> | null>(null);
   const avatarCacheRef = useRef<AvatarCacheMap>(avatarCache);
@@ -603,14 +622,6 @@ export default function SaldoTrackerApp() {
     return () => document.removeEventListener("mousedown", handleClickOutsideModal);
   }, [selectedUser]);
 
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) setIsProfileMenuOpen(false);
-    }
-    if (isProfileMenuOpen) document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isProfileMenuOpen]);
-
   // Auth via onAuthStateChange — enkel systeem, geen bootstrapSession
   useEffect(() => {
     let isMounted = true;
@@ -748,6 +759,10 @@ export default function SaldoTrackerApp() {
       .sort((a, b) => getMaterialDutyMonthOrder(a.month) - getMaterialDutyMonthOrder(b.month)),
     [selectedRideSeason],
   );
+  const rideScheduleStats = useMemo(() => ({
+    away: rideSchedule.filter((match) => match.location === "uit").length,
+    kilometers: rideSchedule.reduce((sum, match) => sum + (match.kilometers ?? 0), 0),
+  }), [rideSchedule]);
   const materialDutyPersonCount = useMemo(
     () => new Set(materialDuty.flatMap((duty) => duty.persons)).size,
     [materialDuty],
@@ -841,6 +856,16 @@ export default function SaldoTrackerApp() {
     }),
     [saldoTransactionSeasonFilter, saldoTransactionUserFilter, saldoTransactions],
   );
+  // De drie meest recente regels van de aangeklikte speler, binnen de categorie die nu open staat.
+  const selectedUserTransactions = useMemo(() => {
+    if (!selectedUser) return [];
+    const source = activeFinanceCategory === "saldo"
+      ? saldoTransactions
+      : activeFinanceCategory === "boete"
+        ? boeteTransactions
+        : vasteLastenTransactions.filter((transaction) => transaction.fixed_charge_id === activeFixedChargeId);
+    return source.filter((transaction) => transaction.user_id === selectedUser.id).slice(0, 3);
+  }, [activeFinanceCategory, activeFixedChargeId, boeteTransactions, saldoTransactions, selectedUser, vasteLastenTransactions]);
   const filteredSaldoTransactionsTotal = useMemo(
     () => Number(filteredSaldoTransactions.reduce((sum, transaction) => sum + transaction.amount_change, 0).toFixed(2)),
     [filteredSaldoTransactions],
@@ -858,11 +883,55 @@ export default function SaldoTrackerApp() {
     [activeStatsSeason, saldoTransactions],
   );
   const totalBalance = useMemo(() => visibleUsers.reduce((sum, user) => sum + user.balance, 0), [visibleUsers]);
-  const financeCategoryLabel = activeFinanceCategory === "saldo" ? "Saldo" : activeFinanceCategory === "boete" ? "Boetes" : "Vaste lasten";
   const financeCategoryDescription = activeFinanceCategory === "saldo"
     ? "Teamsaldo totaal"
     : activeFinanceCategory === "boete" ? "Openstaande boetes totaal" : "Totaal saldo";
   const financeCategoryTotal = activeFinanceCategory === "vaste_lasten" ? vasteLastenTotal : totalBalance;
+  const financeCategoryTotalParts = splitEuro(financeCategoryTotal);
+  // Seizoen (boetes) en post (vaste lasten) horen bij de lijst eronder, dus ze staan onder de sectiekop, net als het saldofilter.
+  const categoryFilterBlock = (
+    <>
+                    {activeFinanceCategory === "boete" ? (
+                      <div className="rounded-xl bg-white p-3 shadow-sm">
+                        <Label htmlFor="season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                        <select
+                          id="season-filter"
+                          value={selectedSeason}
+                          onChange={(e) => setSelectedSeason(e.target.value)}
+                          className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                        >
+                          {availableSeasons.map((season) => (
+                            <option key={season} value={season}>{season}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
+                    {activeFinanceCategory === "vaste_lasten" ? (
+                      <div className="rounded-xl bg-white p-3 shadow-sm">
+                        <Label htmlFor="fixed-charge-filter" className="text-xs uppercase tracking-wide text-slate-500">Vaste lasten post</Label>
+                        {fixedCharges.length === 0 ? (
+                          <p className="mt-2 text-sm text-slate-500">Er is nog geen vaste lasten post aangemaakt.</p>
+                        ) : (
+                          <>
+                            <select
+                              id="fixed-charge-filter"
+                              value={activeFixedChargeId}
+                              onChange={(e) => setSelectedFixedChargeId(e.target.value)}
+                              className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                            >
+                              {fixedCharges.map((charge) => (
+                                <option key={charge.id} value={charge.id}>{charge.name}</option>
+                              ))}
+                            </select>
+                            {activeFixedCharge ? (
+                              <p className="mt-2 text-xs text-slate-400">Aangemaakt op {formatDate(activeFixedCharge.created_at)}</p>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    ) : null}
+    </>
+  );
   const adminTabLabel = activeFinanceCategory === "saldo"
     ? "Saldo aanpassen"
     : activeFinanceCategory === "boete" ? "Boetes uitdelen" : "Betalingen";
@@ -875,6 +944,16 @@ export default function SaldoTrackerApp() {
       ? "Selecteer 1 of meerdere gebruikers en geef in één keer hetzelfde boetebedrag."
       : "Kies de vaste lasten post en zet het betaalde bedrag bij de juiste personen.";
   const amountInputLabel = activeFinanceCategory === "boete" ? "Boetebedrag" : "Bedrag";
+  const saldoTabOptions: Array<{ value: typeof activeSaldoTab; label: string; icon: typeof Users }> = [
+    { value: "overzicht", label: "Spelers", icon: Users },
+    { value: "transacties", label: "Transacties", icon: ArrowLeftRight },
+    ...(isAdmin(currentUser?.role ?? "user") ? [{ value: "toevoegen" as const, label: adminTabLabel, icon: Plus }] : []),
+  ];
+
+  // "Meer tonen" hoort bij één specifieke lijst: zodra categorie of filter wisselt, begint de paginering opnieuw.
+  const transactionListKey = `${activeFinanceCategory}|${saldoTransactionUserFilter}|${saldoTransactionSeasonFilter}`;
+  const transactionLimit = transactionPaging.listKey === transactionListKey ? transactionPaging.limit : transactionPageSize;
+  const showMoreTransactions = () => setTransactionPaging({ listKey: transactionListKey, limit: transactionLimit + transactionPageSize });
 
   const statistics = useMemo(() => {
     const positiveTransactions = statsTransactions.filter((t) => t.amount_change > 0);
@@ -968,6 +1047,14 @@ export default function SaldoTrackerApp() {
     [totalPositivePerUser, users],
   );
 
+  const statisticsKpis = [
+    { label: "Opwaarderingen", value: String(statistics.positiveCount) },
+    { label: "Totaal opgewaardeerd", value: euro(statistics.totalTopUps) },
+    { label: "Gemiddelde opwaardering", value: euro(statistics.averageTopUp) },
+    { label: "Grootste opwaardering", value: euro(statistics.largestTopUp) },
+  ];
+  const spenderChartMax = Math.max(...spenderChartData.map((item) => item.total), 1);
+
   const joostUserIds = useMemo(
     () => new Set(users.filter((user) => user.name === "Joost Jansen").map((user) => user.id)),
     [users],
@@ -1017,7 +1104,7 @@ export default function SaldoTrackerApp() {
   const isDevUser = isDev(currentUser?.role ?? "user");
   const devUsageSection = isDevUser ? (
     <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-      <Card className="rounded-3xl border-0 shadow-sm">
+      <Card className="rounded-xl border-0 shadow-sm">
         <CardHeader className="pb-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -1031,14 +1118,14 @@ export default function SaldoTrackerApp() {
                   id="event-aggregation"
                   value={eventAggregation}
                   onChange={(e) => setEventAggregation(e.target.value as EventAggregation)}
-                  className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-red-300 focus:ring-2 focus:ring-red-100"
+                  className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-red-300 focus:ring-2 focus:ring-red-100"
                 >
                   {eventAggregationOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               </div>
-              <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+              <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
                   checked={excludeJoostEvents}
@@ -1052,7 +1139,7 @@ export default function SaldoTrackerApp() {
         </CardHeader>
         <CardContent className="space-y-5">
           {aggregatedAppEvents.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
               Nog geen `login` of `session_resume` events beschikbaar voor de grafiek.
             </div>
           ) : (
@@ -1065,7 +1152,7 @@ export default function SaldoTrackerApp() {
               <p className="mt-1 text-sm text-slate-500">Chronologisch overzicht van de events die in deze grafiek meetellen.</p>
             </div>
 
-            <div className="overflow-hidden rounded-2xl border bg-white">
+            <div className="overflow-hidden rounded-xl border bg-white">
               <div className="max-h-72 overflow-y-auto">
                 <Table>
                   <TableHeader className="sticky top-0 z-10 bg-white">
@@ -1121,7 +1208,7 @@ export default function SaldoTrackerApp() {
     const { error: logoutError } = await supabase.auth.signOut({ scope: "local" });
     if (logoutError) console.error("Fout bij uitloggen:", logoutError);
     resetAuthState();
-    setIsProfileMenuOpen(false);
+    setIsProfilePageOpen(false);
     setIsPasswordModalOpen(false);
   };
 
@@ -1151,7 +1238,6 @@ export default function SaldoTrackerApp() {
         const { error: uploadError } = await supabase.storage.from(avatarBucket).upload(avatarPath, avatarBlob, { contentType: "image/webp", upsert: false });
         if (uploadError) { console.error("Fout bij uploaden avatar:", uploadError); return; }
         try { await updateCurrentUserAvatar(avatarPath); } catch (updateError) { await removeAvatarObject(avatarPath); throw updateError; }
-        setIsProfileMenuOpen(false);
       }
     };
     reader.readAsDataURL(file);
@@ -1168,7 +1254,6 @@ export default function SaldoTrackerApp() {
     setSelectedUser((prev) => prev?.id === currentUser.id ? { ...prev, avatar: "" } : prev);
     updateAvatarCacheForUser(currentUser.id, "");
     await removeAvatarObject(previousAvatar);
-    setIsProfileMenuOpen(false);
   };
 
   const changePassword = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -1374,9 +1459,9 @@ export default function SaldoTrackerApp() {
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 p-4 md:p-8">
         <div className="mx-auto flex min-h-[85vh] max-w-md items-center justify-center">
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="w-full">
-            <Card className="rounded-3xl border-0 shadow-xl">
+            <Card className="rounded-xl border-0 shadow-xl">
               <CardHeader className="space-y-3 text-center">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-lg">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg">
                   <Wallet className="h-7 w-7" />
                 </div>
                 <div>
@@ -1388,16 +1473,16 @@ export default function SaldoTrackerApp() {
                 <form onSubmit={login} className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="username">Gebruikersnaam</Label>
-                    <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Je gebruikersnaam" className="h-12 rounded-2xl" />
+                    <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Je gebruikersnaam" className="h-12 rounded-xl" />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="password">Wachtwoord</Label>
-                    <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Je wachtwoord" className="h-12 rounded-2xl" />
+                    <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Je wachtwoord" className="h-12 rounded-xl" />
                   </div>
-                  {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div> : null}
-                  <Button type="submit" className="h-12 w-full rounded-2xl text-base">Inloggen</Button>
+                  {error ? <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div> : null}
+                  <Button type="submit" className="h-12 w-full rounded-xl text-base">Inloggen</Button>
                 </form>
-                <div className="mt-6 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+                <div className="mt-6 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
                   <p className="font-medium text-slate-800">Versie 1.1.0</p>
                 </div>
               </CardContent>
@@ -1409,7 +1494,7 @@ export default function SaldoTrackerApp() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-3 pb-[calc(7rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-8 md:pb-[calc(6rem+env(safe-area-inset-bottom))]">
+    <div className="min-h-screen bg-[#f3f4f6] p-3 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(6rem+env(safe-area-inset-bottom))] md:p-6 md:pb-[calc(6rem+env(safe-area-inset-bottom))]">
 
       {isPullRefreshing ? (
         <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-center py-3 bg-white/80 backdrop-blur text-sm text-slate-500">
@@ -1417,210 +1502,233 @@ export default function SaldoTrackerApp() {
         </div>
       ) : null}
 
-      <div className="mx-auto max-w-5xl space-y-4 md:space-y-6">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
-          <Card className="overflow-visible rounded-3xl border-0 shadow-sm">
-            <CardContent className="overflow-visible flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between md:p-6">
-              <div className="flex items-center gap-3">
-                <div className="relative shrink-0">
-                  <button type="button" onClick={() => setIsProfileMenuOpen((prev) => !prev)} className="rounded-full">
-                    <UserAvatar name={currentUser.name} avatar={getAvatarForUser(currentUser)} className="h-12 w-12 ring-2 ring-white shadow" />
-                  </button>
+      <div className="mx-auto max-w-2xl space-y-4">
+        {isProfilePageOpen ? (
+          <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="space-y-4">
+            <div className="relative flex h-10 items-center justify-center">
+              <button
+                type="button"
+                onClick={() => setIsProfilePageOpen(false)}
+                className="absolute left-0 flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm transition hover:bg-slate-50"
+                aria-label="Terug"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <h1 className="text-lg font-semibold text-slate-900">Profiel bewerken</h1>
+            </div>
 
-                  {isProfileMenuOpen ? (
-                    <div ref={profileMenuRef} className="absolute left-0 top-14 z-50 mt-2 w-[280px] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
-                      <div className="space-y-3">
-                        <div>
-                          <p className="font-semibold text-slate-900">Profielfoto aanpassen</p>
-                          <p className="text-sm text-slate-500">Upload een foto of verwijder je huidige profielfoto.</p>
-                        </div>
-                        <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
-                          <UserAvatar name={currentUser.name} avatar={getAvatarForUser(currentUser)} className="h-14 w-14" />
-                          <div className="min-w-0 text-sm text-slate-600">
-                            <p className="truncate font-medium text-slate-900">{currentUser.name}</p>
-                            <p>Klik hieronder om een foto te kiezen.</p>
-                          </div>
-                        </div>
-                        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
-                        <div className="flex flex-col gap-2">
-                          <Button type="button" onClick={() => fileInputRef.current?.click()} className="rounded-2xl">Foto uploaden</Button>
-                          <Button type="button" variant="outline" onClick={removeAvatar} className="rounded-2xl">Profielfoto verwijderen</Button>
-                        </div>
-                        <div className="border-t border-slate-200 pt-3">
-                          <p className="font-semibold text-slate-900">Wachtwoord wijzigen</p>
-                          <Button
-                            type="button" variant="outline" className="mt-3 w-full rounded-2xl"
-                            onClick={() => { setPasswordMessage(""); setCurrentPasswordForChange(""); setNewPassword(""); setConfirmPassword(""); setIsProfileMenuOpen(false); setIsPasswordModalOpen(true); }}
-                          >
-                            Wachtwoord wijzigen
-                          </Button>
-                        </div>
-                        {isDev(currentUser.role) ? (
-                          <div className="border-t border-slate-200 pt-3">
-                            <p className="font-semibold text-slate-900">Gebruiker toevoegen</p>
-                            <Button
-                              type="button" variant="outline" className="mt-3 w-full rounded-2xl"
-                              onClick={() => { setAddUserMessage(""); setAddUserForm({ username: "", name: "", password: "" }); setIsProfileMenuOpen(false); setIsAddUserModalOpen(true); }}
-                            >
-                              Gebruiker toevoegen
-                            </Button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
+            <div className="rounded-xl bg-white px-5 py-6 text-center shadow-sm">
+              <div className="relative mx-auto h-24 w-24">
+                <UserAvatar name={currentUser.name} avatar={getAvatarForUser(currentUser)} className="h-24 w-24 ring-4 ring-[#f3f4f6]" fallbackClassName="text-2xl" />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white ring-4 ring-white transition hover:bg-slate-700"
+                  aria-label="Profielfoto wijzigen"
+                >
+                  <Camera className="h-4 w-4" />
+                </button>
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
+              <p className="mt-4 text-lg font-semibold text-slate-900">{currentUser.name}</p>
+              <p className="text-sm text-slate-500">@{currentUser.username}</p>
+              {currentUser.avatar ? (
+                <button type="button" onClick={removeAvatar} className="mt-3 text-sm font-medium text-red-600 transition hover:text-red-700">
+                  Profielfoto verwijderen
+                </button>
+              ) : (
+                <p className="mt-3 text-sm text-slate-400">Tik op de camera om een foto te kiezen.</p>
+              )}
+            </div>
+
+            <div className="space-y-3 rounded-xl bg-white p-4 shadow-sm">
+              <div className="rounded-xl border border-slate-200 px-4 py-2.5">
+                <p className="text-xs text-slate-400">Volledige naam</p>
+                <p className="text-sm font-medium text-slate-900">{currentUser.name}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 px-4 py-2.5">
+                <p className="text-xs text-slate-400">Gebruikersnaam</p>
+                <p className="text-sm font-medium text-slate-900">@{currentUser.username}</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 px-4 py-2.5">
+                  <p className="text-xs text-slate-400">Rol</p>
+                  <p className="text-sm font-medium text-slate-900">{getRoleLabel(currentUser.role)}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 px-4 py-2.5">
+                  <p className="text-xs text-slate-400">Laatst bijgewerkt</p>
+                  <p className="text-sm font-medium text-slate-900">{lastDataRefreshAt ? formatDateTime(lastDataRefreshAt) : "-"}</p>
+                </div>
+              </div>
+              <p className="px-1 text-xs text-slate-400">Je naam en gebruikersnaam kan alleen een admin aanpassen.</p>
+            </div>
+
+            <div className="divide-y divide-slate-100 rounded-xl bg-white p-2 shadow-sm">
+              <button
+                type="button"
+                onClick={() => { setPasswordMessage(""); setCurrentPasswordForChange(""); setNewPassword(""); setConfirmPassword(""); setIsPasswordModalOpen(true); }}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-slate-50"
+              >
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><KeyRound className="h-4 w-4" /></span>
+                <span className="flex-1 text-sm font-medium text-slate-900">Wachtwoord wijzigen</span>
+                <ChevronRight className="h-4 w-4 text-slate-400" />
+              </button>
+              {isDev(currentUser.role) ? (
+                <button
+                  type="button"
+                  onClick={() => { setAddUserMessage(""); setAddUserForm({ username: "", name: "", password: "" }); setIsAddUserModalOpen(true); }}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-slate-50"
+                >
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><UserPlus className="h-4 w-4" /></span>
+                  <span className="flex-1 text-sm font-medium text-slate-900">Gebruiker toevoegen</span>
+                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                </button>
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              onClick={logout}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-white text-sm font-semibold text-red-600 shadow-sm transition hover:bg-red-50"
+            >
+              <LogOut className="h-4 w-4" />
+              Uitloggen
+            </button>
+          </motion.div>
+        ) : (
+          <>
+            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+              <button
+                type="button"
+                onClick={() => setIsProfilePageOpen(true)}
+                className="flex w-full items-center gap-3 rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.99]"
+              >
+                <UserAvatar name={currentUser.name} avatar={getAvatarForUser(currentUser)} className="h-14 w-14 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-base font-semibold text-slate-900">{currentUser.name}</p>
+                  <p className="truncate text-sm text-slate-500">@{currentUser.username} · {getRoleLabel(currentUser.role)}</p>
+                  {lastDataRefreshAt ? (
+                    <p className="mt-0.5 text-xs text-slate-400">Bijgewerkt {formatDateTime(lastDataRefreshAt)}</p>
+                  ) : null}
+                </div>
+                <ChevronRight className="h-5 w-5 shrink-0 text-slate-400" />
+              </button>
+            </motion.div>
+
+            {activeMainTab === "saldo" ? (
+              <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
+                <div className="grid grid-cols-3 gap-1 rounded-xl bg-white p-1 shadow-sm">
+                  {financeCategoryOptions.map((option) => {
+                    const isActive = activeFinanceCategory === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setActiveFinanceCategory(option.value)}
+                        className={`h-10 rounded-lg text-sm font-medium transition ${isActive ? "bg-slate-900 text-white shadow-sm" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"}`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="relative rounded-xl bg-white px-5 py-8 text-center shadow-sm">
+                  {isAdmin(currentUser.role) ? (
+                    <span className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-[#f3f4f6] px-2.5 py-1 text-xs font-medium text-slate-600">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      Admin
+                    </span>
+                  ) : null}
+                  <p className="text-sm text-slate-500">{financeCategoryDescription}</p>
+                  <p className="mt-1 text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">
+                    {financeCategoryTotalParts.main}
+                    <span className="text-slate-400">{financeCategoryTotalParts.cents}</span>
+                  </p>
+                  {activeFinanceCategory === "saldo" ? (
+                    <p className="mt-3 text-sm text-slate-500">{sortedUsers.length} spelers · {saldoTransactions.length} transacties</p>
+                  ) : null}
+                  {activeFinanceCategory === "boete" ? (
+                    <p className="mt-3 text-sm text-slate-500">{visibleUsers.filter((user) => user.balance > 0).length} spelers met boete · {boeteTransactions.length} boetes</p>
+                  ) : null}
+                  {activeFinanceCategory === "vaste_lasten" ? (
+                    <p className="mt-3 text-sm text-slate-500">
+                      {fixedCharges.length === 0
+                        ? "Nog geen vaste lasten post aangemaakt"
+                        : `${activeFixedChargePerUser.size} van ${sortedUsers.length} betaald · ${vasteLastenTransactions.length} transacties`}
+                    </p>
                   ) : null}
                 </div>
 
-                <div>
-                  <h1 className="text-xl font-semibold sm:text-2xl">Welkom, {currentUser.name}</h1>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <Badge className="rounded-full">{getRoleLabel(currentUser.role)}</Badge>
-                    {lastDataRefreshAt ? (
-                      <span className="text-sm text-slate-500">Bijgewerkt: {formatDateTime(lastDataRefreshAt)}</span>
-                    ) : null}
+                <div className="rounded-xl bg-white p-4 shadow-sm">
+                  <div className={`grid ${isAdmin(currentUser.role) ? "grid-cols-3" : "grid-cols-2"}`}>
+                    {saldoTabOptions.map((option) => {
+                      const isActive = activeSaldoTab === option.value;
+                      const Icon = option.icon;
+                      return (
+                        <button key={option.value} type="button" onClick={() => setActiveSaldoTab(option.value)} className="flex flex-col items-center gap-2">
+                          <span className={`flex h-12 w-12 items-center justify-center rounded-full transition ${isActive ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-700"}`}>
+                            <Icon className="h-5 w-5" />
+                          </span>
+                          <span className={`text-xs font-medium ${isActive ? "text-slate-900" : "text-slate-500"}`}>{option.label}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
 
-              <Button type="button" variant="outline" onClick={logout} className="rounded-2xl">
-                <LogOut className="mr-2 h-4 w-4" />
-                Uitloggen
-              </Button>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        {activeMainTab === "saldo" ? (
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-            <Card className="rounded-3xl border-0 shadow-sm">
-              <Tabs value={activeSaldoTab} onValueChange={(v) => setActiveSaldoTab(v as typeof activeSaldoTab)} className="w-full">
-                <CardHeader className="pb-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <Label htmlFor="finance-category" className="text-xs uppercase tracking-wide text-slate-500"></Label>
-                      <select
-                        id="finance-category"
-                        value={activeFinanceCategory}
-                        onChange={(e) => setActiveFinanceCategory(e.target.value as typeof activeFinanceCategory)}
-                        className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
-                      >
-                        <option value="saldo">Saldo</option>
-                        <option value="boete">Boetes</option>
-                        <option value="vaste_lasten">Vaste lasten</option>
-                      </select>
-                      {activeFinanceCategory === "boete" ? (
-                        <>
-                          <Label htmlFor="season-filter" className="mt-3 block text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                          <select
-                            id="season-filter"
-                            value={selectedSeason}
-                            onChange={(e) => setSelectedSeason(e.target.value)}
-                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
-                          >
-                            {availableSeasons.map((season) => (
-                              <option key={season} value={season}>{season}</option>
-                            ))}
-                          </select>
-                        </>
-                      ) : null}
-                      <CardTitle className="mt-3 text-xl">{financeCategoryLabel}</CardTitle>
-                      <p className="mt-1 text-sm text-slate-500">{financeCategoryDescription}: {euro(financeCategoryTotal)}</p>
+                {activeSaldoTab === "overzicht" ? (
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h2 className="text-sm font-semibold text-slate-900">Spelers</h2>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{visibleUsers.length}</span>
                     </div>
-                    <div className="flex flex-col gap-3 sm:items-end">
-                      {isAdmin(currentUser.role) ? (
-                        <Badge variant="secondary" className="w-fit rounded-full px-3 py-1">
-                          <ShieldCheck className="mr-1 h-4 w-4" />
-                          {activeFinanceCategory === "saldo" ? "Admin kan saldo&apos;s aanpassen" : activeFinanceCategory === "boete" ? "Admin kan boetes uitdelen" : "Admin kan vaste lasten verwerken"}
-                        </Badge>
-                      ) : null}
-                      <TabsList className={`grid rounded-2xl w-full ${isAdmin(currentUser.role) ? "grid-cols-3 sm:w-[420px]" : "grid-cols-2 sm:w-[300px]"}`}>
-                        <TabsTrigger value="overzicht">Overzicht</TabsTrigger>
-                        <TabsTrigger value="transacties">Transacties</TabsTrigger>
-                        {isAdmin(currentUser.role) ? <TabsTrigger value="toevoegen">{adminTabLabel}</TabsTrigger> : null}
-                      </TabsList>
-                    </div>
-                  </div>
-                </CardHeader>
-
-                <CardContent>
-                  <TabsContent value="overzicht" className="mt-0">
-                    {activeFinanceCategory === "vaste_lasten" ? (
-                      <div className="mb-4">
-                        <Label htmlFor="fixed-charge-filter" className="text-xs uppercase tracking-wide text-slate-500">Vaste lasten</Label>
-                        {fixedCharges.length === 0 ? (
-                          <p className="mt-2 text-sm text-slate-500">Er is nog geen vaste lasten post aangemaakt.</p>
-                        ) : (
-                          <>
-                            <select
-                              id="fixed-charge-filter"
-                              value={activeFixedChargeId}
-                              onChange={(e) => setSelectedFixedChargeId(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[240px]"
-                            >
-                              {fixedCharges.map((charge) => (
-                                <option key={charge.id} value={charge.id}>{charge.name}</option>
-                              ))}
-                            </select>
-                            {activeFixedCharge ? (
-                              <p className="mt-2 text-sm text-slate-500">Aangemaakt op {formatDate(activeFixedCharge.created_at)}</p>
-                            ) : null}
-                          </>
-                        )}
-                      </div>
-                    ) : null}
-                    {activeFinanceCategory === "vaste_lasten" && fixedCharges.length === 0 ? null : (
-                      <div className="overflow-hidden rounded-2xl border bg-white">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              {activeFinanceCategory === "vaste_lasten" ? null : <TableHead>Profiel</TableHead>}
-                              <TableHead>Naam</TableHead>
-                              {activeFinanceCategory === "vaste_lasten"
-                                ? <TableHead className="text-right">Betaald</TableHead>
-                                : <TableHead className="text-right">{financeCategoryLabel}</TableHead>}
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {visibleUsers.map((user) => (
-                              <TableRow key={user.id}>
-                                {activeFinanceCategory === "vaste_lasten" ? null : (
-                                  <TableCell>
-                                    <button type="button" onClick={() => setSelectedUser(user)} className="rounded-full">
-                                      <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
-                                    </button>
-                                  </TableCell>
-                                )}
-                                <TableCell className="font-medium">{user.name}</TableCell>
-                                {activeFinanceCategory === "vaste_lasten" ? null : (
-                                  <TableCell className="text-right font-semibold">
-                                    <span className={activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}>{euro(user.balance)}</span>
-                                  </TableCell>
-                                )}
-                                {activeFinanceCategory === "vaste_lasten" ? (
-                                  <TableCell className="text-right">
-                                    <span className="inline-flex justify-end">
-                                      {activeFixedChargePerUser.has(user.id) ? (
-                                        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500" aria-label="Betaald">
-                                          <Check className="h-4 w-4 text-white" />
-                                        </span>
-                                      ) : (
-                                        <span className="block h-6 w-6 rounded-md border-2 border-slate-300" aria-label="Nog niet betaald" />
-                                      )}
-                                    </span>
-                                  </TableCell>
-                                ) : null}
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
+                    {categoryFilterBlock}
+                    {activeFinanceCategory === "vaste_lasten" && fixedCharges.length === 0 ? (
+                      <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">Maak eerst een vaste lasten post aan.</div>
+                    ) : (
+                      visibleUsers.map((user) => {
+                        const hasPaid = activeFixedChargePerUser.has(user.id);
+                        return (
+                          <div key={user.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
+                            <button type="button" onClick={() => setSelectedUser(user)} className="shrink-0 rounded-full">
+                              <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
+                            </button>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-medium text-slate-900">{user.name}</p>
+                              <p className="truncate text-sm text-slate-500">
+                                {activeFinanceCategory === "vaste_lasten"
+                                  ? hasPaid ? `Betaald · ${euro(user.balance)}` : "Nog niet betaald"
+                                  : `@${user.username}`}
+                              </p>
+                            </div>
+                            {activeFinanceCategory === "vaste_lasten" ? (
+                              hasPaid ? (
+                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500" aria-label="Betaald">
+                                  <Check className="h-4 w-4 text-white" />
+                                </span>
+                              ) : (
+                                <span className="block h-7 w-7 shrink-0 rounded-full border-2 border-slate-300" aria-label="Nog niet betaald" />
+                              )
+                            ) : (
+                              <p className={`shrink-0 font-semibold ${activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}`}>
+                                {euro(user.balance)}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
-                  </TabsContent>
-
-                  <TabsContent value="transacties" className="mt-0">
-                    <h3 className="mb-2 text-sm font-semibold text-slate-900">Transacties</h3>
+                  </section>
+                ) : activeSaldoTab === "transacties" ? (
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h2 className="text-sm font-semibold text-slate-900">Transacties</h2>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{filteredTransactions.length}</span>
+                    </div>
+                    {categoryFilterBlock}
                     {activeFinanceCategory === "saldo" ? (
-                      <div className="mb-3 space-y-3 rounded-2xl border bg-slate-50 p-3">
+                      <div className="space-y-3 rounded-xl bg-white p-3 shadow-sm">
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div>
                             <Label htmlFor="saldo-transaction-user-filter" className="text-xs uppercase tracking-wide text-slate-500">Gebruiker</Label>
@@ -1628,7 +1736,7 @@ export default function SaldoTrackerApp() {
                               id="saldo-transaction-user-filter"
                               value={saldoTransactionUserFilter}
                               onChange={(e) => setSaldoTransactionUserFilter(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                              className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
                             >
                               <option value={allUsersValue}>Alle gebruikers</option>
                               {saldoTransactionUsers.map((user) => (
@@ -1642,7 +1750,7 @@ export default function SaldoTrackerApp() {
                               id="saldo-transaction-season-filter"
                               value={saldoTransactionSeasonFilter}
                               onChange={(e) => setSaldoTransactionSeasonFilter(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                              className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
                             >
                               <option value={allTimeSeasonValue}>Alle seizoenen</option>
                               {statsSeasons.map((season) => (
@@ -1670,462 +1778,425 @@ export default function SaldoTrackerApp() {
                         </div>
                       </div>
                     ) : null}
-                    <div className="overflow-hidden rounded-2xl border bg-white">
-                      <div className="max-h-[420px] overflow-y-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Datum</TableHead>
-                              <TableHead>Naam</TableHead>
-                              <TableHead className="text-right">Bedrag</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {filteredTransactions.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={3} className="text-center text-slate-500">
-                                  {activeFinanceCategory === "saldo" && isSaldoTransactionFilterActive
-                                    ? "Geen transacties voor dit filter."
-                                    : "Nog geen transacties."}
-                                </TableCell>
-                              </TableRow>
-                            ) : (
-                              filteredTransactions.map((transaction) => (
-                                <TableRow key={transaction.id}>
-                                  <TableCell>{formatDate(transaction.created_at)}</TableCell>
-                                  <TableCell className="font-medium">{transaction.name}</TableCell>
-                                  <TableCell className={`text-right font-semibold ${activeFinanceCategory === "boete" ? "text-red-600" : "text-slate-900"}`}>
-                                    {transaction.amount_change > 0 && activeFinanceCategory !== "boete" ? "+" : ""}{euro(transaction.amount_change)}
-                                  </TableCell>
-                                </TableRow>
-                              ))
-                            )}
-                          </TableBody>
-                        </Table>
+                    {filteredTransactions.length === 0 ? (
+                      <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">
+                        {activeFinanceCategory === "saldo" && isSaldoTransactionFilterActive ? "Geen transacties voor dit filter." : "Nog geen transacties."}
                       </div>
-                    </div>
-                  </TabsContent>
-
-                  {isAdmin(currentUser.role) ? (
-                    <TabsContent value="toevoegen" className="mt-0">
-                      <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                        {activeFinanceCategory === "vaste_lasten" ? (
-                          <div className="lg:col-span-2">
-                            <Button
-                              type="button"
-                              onClick={() => { setFixedChargeForm((prev) => ({ ...prev, message: "" })); setIsFixedChargeModalOpen(true); }}
-                              className="h-12 w-full rounded-2xl sm:w-auto"
-                            >
-                              Post aanmaken of verwijderen
-                            </Button>
-                          </div>
-                        ) : null}
-
-                        <Card className="rounded-2xl border shadow-none">
-                          <CardContent className="p-5">
-                            <div className="space-y-2">
-                              <h3 className="text-lg font-semibold">{adminSectionTitle}</h3>
-                              <p className="text-sm text-slate-500">{adminSectionDescription}</p>
+                    ) : (
+                      filteredTransactions.slice(0, transactionLimit).map((transaction) => {
+                        const isIncoming = transaction.amount_change >= 0;
+                        const isBoete = transaction.category === "boete";
+                        return (
+                          <div key={transaction.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
+                            <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${isBoete ? "bg-red-50 text-red-600" : "bg-[#f3f4f6] text-slate-700"}`}>
+                              {isBoete ? <Receipt className="h-5 w-5" /> : isIncoming ? <ArrowDownLeft className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-medium text-slate-900">{transaction.name}</p>
+                              <p className="truncate text-sm text-slate-500">{getTransactionKindLabel(transaction)} · {formatDate(transaction.created_at)}</p>
                             </div>
-                            <div className="mt-5 space-y-4">
-                              {activeFinanceCategory === "vaste_lasten" ? (
-                                <div className="space-y-2">
-                                  <Label htmlFor="payment-fixed-charge">Vaste lasten post</Label>
-                                  {fixedCharges.length === 0 ? (
-                                    <p className="text-sm text-slate-500">Maak hierboven eerst een vaste lasten post aan.</p>
-                                  ) : (
-                                    <select
-                                      id="payment-fixed-charge"
-                                      value={paymentFixedChargeId}
-                                      onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, fixedChargeId: e.target.value, message: "" }))}
-                                      className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                                    >
-                                      <option value="">Kies een post</option>
-                                      {fixedCharges.map((charge) => (
-                                        <option key={charge.id} value={charge.id}>{charge.name}</option>
-                                      ))}
-                                    </select>
-                                  )}
-                                </div>
-                              ) : null}
-                              <div className="space-y-2">
-                                <Label>Gebruikers selecteren</Label>
-                                <div className="max-h-72 space-y-2 overflow-y-auto rounded-2xl border p-3">
-                                  {visibleUsers.map((user) => {
-                                    const selected = addMoneyForm.selectedUserIds.includes(user.id);
-                                    return (
-                                      <button
-                                        key={user.id} type="button" onClick={() => toggleSelectedUser(user.id)}
-                                        className={`flex w-full items-center justify-between rounded-2xl border px-3 py-3 text-left transition ${selected ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white hover:bg-slate-50"}`}
-                                      >
-                                        <div className="flex items-center gap-3">
-                                          <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-10 w-10" />
-                                          <div>
-                                            <p className="font-medium">{user.name}</p>
-                                            <p className={`text-sm ${selected ? "text-slate-200" : "text-slate-500"}`}>
-                                              {activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Openstaande boetes" : "Betaald voor deze post"}: {euro(user.balance)}
-                                            </p>
-                                          </div>
-                                        </div>
-                                        <div className={`rounded-full px-3 py-1 text-xs font-semibold ${selected ? "bg-white text-slate-900" : "bg-slate-100 text-slate-600"}`}>
-                                          {selected ? "Geselecteerd" : "Selecteer"}
-                                        </div>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor="amount">{amountInputLabel}</Label>
-                                <Input
-                                  id="amount" type="number" step="0.01" min={activeFinanceCategory === "vaste_lasten" ? "0" : undefined} value={addMoneyForm.amount}
-                                  onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
-                                  placeholder={activeFinanceCategory === "boete" ? "Bijv. 5,00" : "Bijv. 10,50"} className="h-12 rounded-2xl"
-                                />
-                              </div>
-                              <Button
-                                onClick={addMoneyToSelectedUsers}
-                                disabled={activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId}
-                                className="h-12 rounded-2xl"
-                              >
-                                <PlusCircle className="mr-2 h-4 w-4" />
-                                {activeFinanceCategory === "saldo" ? "Toevoegen" : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
-                              </Button>
-                              {addMoneyForm.message ? (
-                                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
-                              ) : null}
-                            </div>
-                          </CardContent>
-                        </Card>
-
-                        <Card className="rounded-2xl border shadow-none">
-                          <CardContent className="p-5">
-                            <h3 className="text-lg font-semibold">Geselecteerde gebruikers</h3>
-                            <div className="mt-4 space-y-2">
-                              {addMoneyForm.selectedUserIds.length === 0 ? (
-                                <p className="text-sm text-slate-500">Nog niemand geselecteerd.</p>
-                              ) : (
-                                visibleUsers.filter((u) => addMoneyForm.selectedUserIds.includes(u.id)).map((user) => (
-                                  <div key={user.id} className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-3">
-                                    <div className="flex items-center gap-3">
-                                      <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-9 w-9" />
-                                      <span className="font-medium">{user.name}</span>
-                                    </div>
-                                    <span className="text-sm text-slate-500">{euro(user.balance)}</span>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </CardContent>
-                        </Card>
-
-                        {activeFinanceCategory === "vaste_lasten" ? (
-                          <Card className="rounded-2xl border shadow-none lg:col-span-2">
-                            <CardContent className="p-5">
-                              <div className="space-y-2">
-                                <h3 className="text-lg font-semibold">Betalingen uit vaste lasten</h3>
-                                <p className="text-sm text-slate-500">Geld dat uit de pot is uitgegeven. Dit gaat van het totale saldo af en staat niet op naam van een speler.</p>
-                              </div>
-                              <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
-                                <div className="space-y-2">
-                                  <Label htmlFor="pot-payment-amount">Uitgegeven bedrag</Label>
-                                  <Input
-                                    id="pot-payment-amount" type="number" step="0.01" value={potPaymentForm.amount}
-                                    onChange={(e) => setPotPaymentForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
-                                    placeholder="Bijv. 120,00" className="h-12 rounded-2xl"
-                                  />
-                                </div>
-                                <Button onClick={addPotPayment} disabled={isSavingPotPayment} className="h-12 rounded-2xl">
-                                  <MinusCircle className="mr-2 h-4 w-4" />
-                                  {isSavingPotPayment ? "Verwerken..." : "Uitgave verwerken"}
-                                </Button>
-                              </div>
-                              {potPaymentForm.message ? (
-                                <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{potPaymentForm.message}</div>
-                              ) : null}
-                            </CardContent>
-                          </Card>
-                        ) : null}
-                      </div>
-                    </TabsContent>
-                  ) : null}
-                </CardContent>
-              </Tabs>
-            </Card>
-          </motion.div>
-        ) : activeMainTab === "rijschema" ? (
-          <>
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-              <Card className="rounded-3xl border-0 shadow-sm">
-                <CardHeader className="pb-2">
-                  <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                  <select
-                    id="ride-season-filter"
-                    value={selectedRideSeason}
-                    onChange={(e) => setSelectedRideSeason(e.target.value)}
-                    className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 sm:w-[180px]"
-                  >
-                    {rideScheduleSeasons.map((season) => (
-                      <option key={season} value={season}>{season}</option>
-                    ))}
-                  </select>
-                  <CardTitle className="mt-3 text-lg">Rijschema</CardTitle>
-                  <p className="text-xs text-slate-500">
-                    {rideSchedule.length} wedstrijden · {rideSchedule.filter((m) => m.location === "uit").length} uit · {rideSchedule.reduce((sum, m) => sum + (m.kilometers ?? 0), 0)} km
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  {rideSchedule.length === 0 ? (
-                    <p className="py-2 text-sm text-slate-500">Nog geen rijschema voor dit seizoen.</p>
-                  ) : null}
-                  <div className="divide-y divide-slate-100">
-                    {rideSchedule.map((match) => {
-                      const isAway = match.location === "uit";
-                      const { day, month } = getRideScheduleDateParts(match.match_date);
-                      const isUserRiding = match.riders.some((rider) => isCurrentUserNamed(rider, currentUser));
-
-                      return (
-                        <div
-                          key={match.id}
-                          className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "-mx-2 rounded-lg bg-slate-900/5 px-2" : ""}`}
-                        >
-                          <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
-                            <div className="text-[13px] font-semibold leading-none">{day}</div>
-                            <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <h3 className="text-[13px] font-semibold leading-tight text-slate-900">{getRideScheduleMatchTitle(match)}</h3>
-                            {match.riders.length > 0 ? (
-                              <p className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] leading-tight text-slate-500">
-                                {match.riders.map((rider, index) => (
-                                  <Fragment key={`${rider}-${index}`}>
-                                    {isCurrentUserNamed(rider, currentUser) ? (
-                                      <span className="rounded bg-slate-900 px-1 py-px font-semibold text-white">{rider}</span>
-                                    ) : (
-                                      <span>{rider}</span>
-                                    )}
-                                    {index < match.riders.length - 1 ? <span className="text-slate-300">·</span> : null}
-                                  </Fragment>
-                                ))}
-                              </p>
-                            ) : null}
-                          </div>
-                          <div className="shrink-0 text-right">
-                            <span className={`text-[9px] font-semibold uppercase tracking-wide ${isAway ? "text-slate-900" : "text-slate-400"}`}>{isAway ? "Uit" : "Thuis"}</span>
-                            {match.kilometers !== null ? (
-                              <div className="text-[11px] font-medium tabular-nums leading-tight text-slate-500">{match.kilometers} km</div>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.1 }}>
-              <Card className="rounded-3xl border-0 shadow-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg">Materiaalsletjes</CardTitle>
-                  <p className="text-xs text-slate-500">
-                    {materialDuty.length} maanden · {materialDutyPersonCount} personen
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  {materialDuty.length === 0 ? (
-                    <p className="py-2 text-sm text-slate-500">Nog geen materiaalsletjes voor dit seizoen.</p>
-                  ) : null}
-                  <div className="divide-y divide-slate-100">
-                    {materialDuty.map((duty) => {
-                      const isCurrentMonth = duty.season === currentMaterialDutyMonth.season && duty.month === currentMaterialDutyMonth.month;
-                      const isUserOnDuty = duty.persons.some((person) => isCurrentUserNamed(person, currentUser));
-
-                      return (
-                        <div
-                          key={`${duty.season}-${duty.month}`}
-                          className={`flex items-center gap-2.5 py-2 ${isUserOnDuty ? "-mx-2 rounded-lg bg-slate-900/5 px-2" : ""}`}
-                        >
-                          <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isCurrentMonth ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
-                            <div className="text-[13px] font-semibold leading-none">{shortMonths[duty.month - 1] ?? ""}</div>
-                            <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{getMaterialDutyYear(duty.season, duty.month).slice(-2)}</div>
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="flex flex-wrap items-center gap-x-1 text-[13px] font-semibold leading-tight text-slate-900">
-                              {duty.persons.map((person, index) => (
-                                <Fragment key={`${person}-${index}`}>
-                                  {isCurrentUserNamed(person, currentUser) ? (
-                                    <span className="rounded bg-slate-900 px-1 py-px text-white">{person}</span>
-                                  ) : (
-                                    <span>{person}</span>
-                                  )}
-                                  {index < duty.persons.length - 1 ? <span className="font-normal text-slate-300">·</span> : null}
-                                </Fragment>
-                              ))}
+                            <p className={`shrink-0 font-semibold ${isBoete ? "text-red-600" : "text-slate-900"}`}>
+                              {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
                             </p>
                           </div>
-                          {isCurrentMonth ? (
-                            <div className="shrink-0 text-right">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-900">Deze maand</span>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          </>
-        ) : activeMainTab === "statistieken" ? (
-          <>
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-              <Card className="rounded-3xl border-0 shadow-sm">
-                <CardHeader className="pb-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <CardTitle className="text-xl">Statistieken</CardTitle>
-                      <p className="mt-1 text-sm text-slate-500">Overzicht van opwaarderingen en trends.</p>
-                    </div>
-                    <div className="w-full sm:w-[180px]">
-                      <Label htmlFor="stats-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                      <select
-                        id="stats-season-filter"
-                        value={activeStatsSeason}
-                        onChange={(e) => setSelectedStatsSeason(e.target.value)}
-                        className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                        );
+                      })
+                    )}
+                    {filteredTransactions.length > transactionLimit ? (
+                      <button
+                        type="button"
+                        onClick={showMoreTransactions}
+                        className="w-full rounded-xl bg-white py-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
                       >
-                        <option value={allTimeSeasonValue}>Aller tijden</option>
-                        {statsSeasons.map((season) => (
-                          <option key={season} value={season}>{season}</option>
-                        ))}
-                      </select>
+                        Meer tonen ({filteredTransactions.length - transactionLimit} resterend)
+                      </button>
+                    ) : null}
+                  </section>
+                ) : isAdmin(currentUser.role) ? (
+                  <section className="space-y-4">
+                    {categoryFilterBlock}
+                    {activeFinanceCategory === "vaste_lasten" ? (
+                      <Button
+                        type="button"
+                        onClick={() => { setFixedChargeForm((prev) => ({ ...prev, message: "" })); setIsFixedChargeModalOpen(true); }}
+                        className="h-12 w-full rounded-xl"
+                      >
+                        Post aanmaken of verwijderen
+                      </Button>
+                    ) : null}
+
+                    <div className="rounded-xl bg-white p-4 shadow-sm">
+                      <div className="space-y-1">
+                        <h3 className="text-base font-semibold text-slate-900">{adminSectionTitle}</h3>
+                        <p className="text-sm text-slate-500">{adminSectionDescription}</p>
+                      </div>
+                      <div className="mt-4 space-y-4">
+                        {activeFinanceCategory === "vaste_lasten" ? (
+                          <div className="space-y-2">
+                            <Label htmlFor="payment-fixed-charge">Vaste lasten post</Label>
+                            {fixedCharges.length === 0 ? (
+                              <p className="text-sm text-slate-500">Maak hierboven eerst een vaste lasten post aan.</p>
+                            ) : (
+                              <select
+                                id="payment-fixed-charge"
+                                value={paymentFixedChargeId}
+                                onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, fixedChargeId: e.target.value, message: "" }))}
+                                className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                              >
+                                <option value="">Kies een post</option>
+                                {fixedCharges.map((charge) => (
+                                  <option key={charge.id} value={charge.id}>{charge.name}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                        ) : null}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label>Gebruikers selecteren</Label>
+                            <span className="text-xs text-slate-500">{addMoneyForm.selectedUserIds.length} geselecteerd</span>
+                          </div>
+                          <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-[#f3f4f6] p-2">
+                            {visibleUsers.map((user) => {
+                              const selected = addMoneyForm.selectedUserIds.includes(user.id);
+                              return (
+                                <button
+                                  key={user.id} type="button" onClick={() => toggleSelectedUser(user.id)}
+                                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${selected ? "bg-slate-900 text-white" : "bg-white hover:bg-slate-50"}`}
+                                >
+                                  <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-10 w-10 shrink-0" />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate font-medium">{user.name}</p>
+                                    <p className={`truncate text-sm ${selected ? "text-slate-300" : "text-slate-500"}`}>
+                                      {activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Openstaande boetes" : "Betaald voor deze post"}: {euro(user.balance)}
+                                    </p>
+                                  </div>
+                                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${selected ? "bg-white text-slate-900" : "border-2 border-slate-300"}`}>
+                                    {selected ? <Check className="h-3.5 w-3.5" /> : null}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="amount">{amountInputLabel}</Label>
+                          <Input
+                            id="amount" type="number" step="0.01" min={activeFinanceCategory === "vaste_lasten" ? "0" : undefined} value={addMoneyForm.amount}
+                            onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
+                            placeholder={activeFinanceCategory === "boete" ? "Bijv. 5,00" : "Bijv. 10,50"} className="h-12 rounded-xl"
+                          />
+                        </div>
+                        <Button
+                          onClick={addMoneyToSelectedUsers}
+                          disabled={activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId}
+                          className="h-12 w-full rounded-xl"
+                        >
+                          <PlusCircle className="mr-2 h-4 w-4" />
+                          {activeFinanceCategory === "saldo" ? "Toevoegen" : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
+                        </Button>
+                        {addMoneyForm.message ? (
+                          <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {activeFinanceCategory === "vaste_lasten" ? (
+                      <div className="rounded-xl bg-white p-4 shadow-sm">
+                        <div className="space-y-1">
+                          <h3 className="text-base font-semibold text-slate-900">Betalingen uit vaste lasten</h3>
+                          <p className="text-sm text-slate-500">Geld dat uit de pot is uitgegeven. Dit gaat van het totale saldo af en staat niet op naam van een speler.</p>
+                        </div>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                          <div className="space-y-2">
+                            <Label htmlFor="pot-payment-amount">Uitgegeven bedrag</Label>
+                            <Input
+                              id="pot-payment-amount" type="number" step="0.01" value={potPaymentForm.amount}
+                              onChange={(e) => setPotPaymentForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
+                              placeholder="Bijv. 120,00" className="h-12 rounded-xl"
+                            />
+                          </div>
+                          <Button onClick={addPotPayment} disabled={isSavingPotPayment} className="h-12 rounded-xl">
+                            <MinusCircle className="mr-2 h-4 w-4" />
+                            {isSavingPotPayment ? "Verwerken..." : "Uitgave verwerken"}
+                          </Button>
+                        </div>
+                        {potPaymentForm.message ? (
+                          <div className="mt-3 rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{potPaymentForm.message}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
+              </motion.div>
+            ) : activeMainTab === "rijschema" ? (
+              <>
+                <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
+                  <div className="rounded-xl bg-white p-3 shadow-sm">
+                    <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                    <select
+                      id="ride-season-filter"
+                      value={selectedRideSeason}
+                      onChange={(e) => setSelectedRideSeason(e.target.value)}
+                      className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                    >
+                      {rideScheduleSeasons.map((season) => (
+                        <option key={season} value={season}>{season}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                    <div className="grid grid-cols-3 divide-x divide-slate-100 text-center">
+                      <div>
+                        <p className="text-2xl font-bold tracking-tight text-slate-900">{rideSchedule.length}</p>
+                        <p className="text-xs text-slate-500">wedstrijden</p>
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold tracking-tight text-slate-900">{rideScheduleStats.away}</p>
+                        <p className="text-xs text-slate-500">uit</p>
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold tracking-tight text-slate-900">{rideScheduleStats.kilometers}</p>
+                        <p className="text-xs text-slate-500">km</p>
+                      </div>
                     </div>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Card className="rounded-2xl border shadow-none">
-                      <CardContent className="space-y-3 p-5">
-                        <div className="flex items-center gap-2">
-                          <BarChart3 className="h-4 w-4 text-slate-600" />
-                          <h3 className="text-lg font-semibold">Algemeen</h3>
-                        </div>
-                        <p className="text-sm text-slate-600">Aantal opwaarderingen: <span className="font-medium text-slate-900">{statistics.positiveCount}</span></p>
-                        <p className="text-sm text-slate-600">Totaal opgewaardeerd: <span className="font-medium text-slate-900">{euro(statistics.totalTopUps)}</span></p>
-                        <p className="text-sm text-slate-600">Gemiddelde opwaardering: <span className="font-medium text-slate-900">{euro(statistics.averageTopUp)}</span></p>
-                        <p className="text-sm text-slate-600">Grootste opwaardering: <span className="font-medium text-slate-900">{euro(statistics.largestTopUp)}</span></p>
-                      </CardContent>
-                    </Card>
 
-                    <Card className="rounded-2xl border shadow-none">
-                      <CardContent className="space-y-3 p-5">
-                        <h3 className="text-lg font-semibold">Kas-kanonnen</h3>
-                        {spenderChartData.length === 0 ? (
-                          <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
-                        ) : (
-                          <div className="grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-x-2 gap-y-1">
-                            {(() => {
-                              const maxTotal = Math.max(...spenderChartData.map((item) => item.total), 1);
-                              return spenderChartData.map((spender) => {
-                                const widthPercent = maxTotal === 0 ? 0 : (spender.total / maxTotal) * 100;
-                                return (
-                                  <Fragment key={spender.userId}>
-                                    <div className="whitespace-nowrap text-right text-xs font-medium text-slate-700">{spender.username}</div>
-                                    <div className="min-w-0 overflow-hidden bg-slate-100">
-                                      <div
-                                        className="h-4 bg-[#3c4759] transition-[width]"
-                                        style={{ width: `${widthPercent}%` }}
-                                      />
-                                    </div>
-                                    <span className="text-xs font-normal text-slate-900">{euro(spender.total)}</span>
-                                  </Fragment>
-                                );
-                              });
-                            })()}
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h2 className="text-sm font-semibold text-slate-900">Rijschema</h2>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{rideSchedule.length}</span>
+                    </div>
+                    {rideSchedule.length === 0 ? (
+                      <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">Nog geen rijschema voor dit seizoen.</div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 rounded-xl bg-white px-2 shadow-sm">
+                        {rideSchedule.map((match) => {
+                          const isAway = match.location === "uit";
+                          const { day, month } = getRideScheduleDateParts(match.match_date);
+                          const isUserRiding = match.riders.some((rider) => isCurrentUserNamed(rider, currentUser));
 
-                    <Card className="rounded-2xl border shadow-none md:col-span-2">
-                      <CardContent className="space-y-3 p-5">
-                        <h3 className="text-lg font-semibold">Opwaarderingen per maand</h3>
-                        {statistics.monthlyTotals.length === 0 ? (
-                          <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {statistics.monthlyTotals.map((item) => (
-                              <div key={item.key} className="rounded-xl bg-slate-50">
-                                <button
-                                  type="button"
-                                  onClick={() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
-                                  className="flex w-full items-center justify-between px-3 py-2 text-left"
-                                >
-                                  <span className="text-sm text-slate-700">{item.label}</span>
-                                  <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
-                                </button>
-                                {expandedStatMonths.includes(item.key) ? (
-                                  <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
-                                    {item.perUserTotals.map((person) => (
-                                      <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
-                                        <span className="text-slate-600">{person.name}</span>
-                                        <span className="font-medium text-slate-900">{euro(person.total)}</span>
-                                      </div>
+                          return (
+                            <div
+                              key={match.id}
+                              className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "my-1 rounded-lg bg-slate-900/5 px-2" : "px-1"}`}
+                            >
+                              <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600"}`}>
+                                <div className="text-[13px] font-semibold leading-none">{day}</div>
+                                <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <h3 className="text-[13px] font-semibold leading-tight text-slate-900">{getRideScheduleMatchTitle(match)}</h3>
+                                {match.riders.length > 0 ? (
+                                  <p className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] leading-tight text-slate-500">
+                                    {match.riders.map((rider, index) => (
+                                      <Fragment key={`${rider}-${index}`}>
+                                        <span>{rider}</span>
+                                        {index < match.riders.length - 1 ? <span className="text-slate-300">·</span> : null}
+                                      </Fragment>
                                     ))}
-                                  </div>
+                                  </p>
                                 ) : null}
                               </div>
-                            ))}
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-
-                    <Card className="rounded-2xl border shadow-none md:col-span-2">
-                      <CardContent className="space-y-3 p-5">
-                        <h3 className="text-lg font-semibold">Uitgaven per datum</h3>
-                        {statistics.dailyExpenses.length === 0 ? (
-                          <p className="text-sm text-slate-500">Nog geen uitgaven beschikbaar.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {statistics.dailyExpenses.map((item) => (
-                              <div key={item.key} className="rounded-xl bg-slate-50">
-                                <button
-                                  type="button"
-                                  onClick={() => setExpandedStatDates((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
-                                  className="flex w-full items-center justify-between px-3 py-2 text-left"
-                                >
-                                  <span className="text-sm text-slate-700">{item.label}</span>
-                                  <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
-                                </button>
-                                {expandedStatDates.includes(item.key) ? (
-                                  <div className="space-y-1 border-t border-slate-200 px-3 pb-2 pt-2">
-                                    {item.perUserTotals.map((person) => (
-                                      <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
-                                        <span className="text-slate-600">{person.name}</span>
-                                        <span className="font-medium text-slate-900">{euro(person.total)}</span>
-                                      </div>
-                                    ))}
-                                  </div>
+                              <div className="shrink-0 text-right">
+                                <span className={`text-[9px] font-semibold uppercase tracking-wide ${isAway ? "text-slate-900" : "text-slate-400"}`}>{isAway ? "Uit" : "Thuis"}</span>
+                                {match.kilometers !== null ? (
+                                  <div className="text-[11px] font-medium tabular-nums leading-tight text-slate-500">{match.kilometers} km</div>
                                 ) : null}
                               </div>
-                            ))}
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h2 className="text-sm font-semibold text-slate-900">Materiaalsletjes</h2>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{materialDuty.length} maanden · {materialDutyPersonCount} personen</span>
+                    </div>
+                    {materialDuty.length === 0 ? (
+                      <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">Nog geen materiaalsletjes voor dit seizoen.</div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 rounded-xl bg-white px-2 shadow-sm">
+                        {materialDuty.map((duty) => {
+                          const isCurrentMonth = duty.season === currentMaterialDutyMonth.season && duty.month === currentMaterialDutyMonth.month;
+                          const isUserOnDuty = duty.persons.some((person) => isCurrentUserNamed(person, currentUser));
+
+                          return (
+                            <div
+                              key={`${duty.season}-${duty.month}`}
+                              className={`flex items-center gap-2.5 py-2 ${isUserOnDuty ? "my-1 rounded-lg bg-slate-900/5 px-2" : "px-1"}`}
+                            >
+                              <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isCurrentMonth ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600"}`}>
+                                <div className="text-[13px] font-semibold leading-none">{shortMonths[duty.month - 1] ?? ""}</div>
+                                <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{getMaterialDutyYear(duty.season, duty.month).slice(-2)}</div>
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="flex flex-wrap items-center gap-x-1 text-[13px] font-semibold leading-tight text-slate-900">
+                                  {duty.persons.map((person, index) => (
+                                    <Fragment key={`${person}-${index}`}>
+                                      <span>{person}</span>
+                                      {index < duty.persons.length - 1 ? <span className="font-normal text-slate-300">·</span> : null}
+                                    </Fragment>
+                                  ))}
+                                </p>
+                              </div>
+                              {isCurrentMonth ? (
+                                <span className="shrink-0 rounded-full bg-slate-900 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">Deze maand</span>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                </motion.div>
+              </>
+            ) : activeMainTab === "statistieken" ? (
+              <>
+                <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
+                  <div className="rounded-xl bg-white p-3 shadow-sm">
+                    <Label htmlFor="stats-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                    <select
+                      id="stats-season-filter"
+                      value={activeStatsSeason}
+                      onChange={(e) => setSelectedStatsSeason(e.target.value)}
+                      className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                    >
+                      <option value={allTimeSeasonValue}>Aller tijden</option>
+                      {statsSeasons.map((season) => (
+                        <option key={season} value={season}>{season}</option>
+                      ))}
+                    </select>
                   </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-            {devUsageSection}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {statisticsKpis.map((kpi) => (
+                      <div key={kpi.label} className="relative rounded-xl bg-white p-4 shadow-sm">
+                        <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-500">
+                          <ArrowUpRight className="h-3.5 w-3.5" />
+                        </span>
+                        <p className="pr-8 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
+                        <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-base font-semibold text-slate-900">Kas-kanonnen</h3>
+                      <span className="text-xs text-slate-500">Totaal opgewaardeerd</span>
+                    </div>
+                    {spenderChartData.length === 0 ? (
+                      <p className="mt-3 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                    ) : (
+                      <div className="mt-4 space-y-3">
+                        {spenderChartData.map((spender, index) => {
+                          const widthPercent = (spender.total / spenderChartMax) * 100;
+                          return (
+                            <div key={spender.userId} className="flex items-center gap-3">
+                              <span className="w-20 shrink-0 truncate text-xs font-medium text-slate-700">{spender.username}</span>
+                              <div className="h-2.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[#f3f4f6]">
+                                <motion.div
+                                  initial={{ width: 0 }}
+                                  animate={{ width: `${widthPercent}%` }}
+                                  transition={{ duration: 0.5, delay: index * 0.03 }}
+                                  className={`h-full rounded-full ${index === 0 ? "bg-slate-900" : "bg-slate-300"}`}
+                                />
+                              </div>
+                              <span className="w-16 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-900">{euro(spender.total)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                    <h3 className="text-base font-semibold text-slate-900">Opwaarderingen per maand</h3>
+                    {statistics.monthlyTotals.length === 0 ? (
+                      <p className="mt-3 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {statistics.monthlyTotals.map((item) => {
+                          const isExpanded = expandedStatMonths.includes(item.key);
+                          return (
+                            <div key={item.key} className="rounded-lg bg-[#f3f4f6]">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
+                                className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+                              >
+                                <span className="flex-1 text-sm text-slate-700">{item.label}</span>
+                                <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
+                                <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                              </button>
+                              {isExpanded ? (
+                                <div className="space-y-1.5 border-t border-slate-200 px-3 pb-2.5 pt-2">
+                                  {item.perUserTotals.map((person) => (
+                                    <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
+                                      <span className="text-slate-600">{person.name}</span>
+                                      <span className="font-medium text-slate-900">{euro(person.total)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                    <h3 className="text-base font-semibold text-slate-900">Uitgaven per datum</h3>
+                    {statistics.dailyExpenses.length === 0 ? (
+                      <p className="mt-3 text-sm text-slate-500">Nog geen uitgaven beschikbaar.</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {statistics.dailyExpenses.map((item) => {
+                          const isExpanded = expandedStatDates.includes(item.key);
+                          return (
+                            <div key={item.key} className="rounded-lg bg-[#f3f4f6]">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedStatDates((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
+                                className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+                              >
+                                <span className="flex-1 text-sm text-slate-700">{item.label}</span>
+                                <span className="text-sm font-semibold text-slate-900">{euro(item.total)}</span>
+                                <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                              </button>
+                              {isExpanded ? (
+                                <div className="space-y-1.5 border-t border-slate-200 px-3 pb-2.5 pt-2">
+                                  {item.perUserTotals.map((person) => (
+                                    <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
+                                      <span className="text-slate-600">{person.name}</span>
+                                      <span className="font-medium text-slate-900">{euro(person.total)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+                {devUsageSection}
+              </>
+            ) : null}
           </>
-        ) : null}
+        )}
       </div>
 
       {isPasswordModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => { if (isSavingPassword) return; setIsPasswordModalOpen(false); }}>
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="space-y-4">
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Wachtwoord wijzigen</h2>
@@ -2134,20 +2205,20 @@ export default function SaldoTrackerApp() {
               <form onSubmit={changePassword} className="space-y-3">
                 <div className="space-y-2">
                   <Label htmlFor="current-password">Huidig wachtwoord</Label>
-                  <Input id="current-password" type="password" value={currentPasswordForChange} onChange={(e) => { setCurrentPasswordForChange(e.target.value); setPasswordMessage(""); }} placeholder="Je huidige wachtwoord" className="h-11 rounded-2xl" />
+                  <Input id="current-password" type="password" value={currentPasswordForChange} onChange={(e) => { setCurrentPasswordForChange(e.target.value); setPasswordMessage(""); }} placeholder="Je huidige wachtwoord" className="h-11 rounded-xl" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="new-password">Nieuw wachtwoord</Label>
-                  <Input id="new-password" type="password" value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setPasswordMessage(""); }} placeholder="Minimaal 8 tekens" className="h-11 rounded-2xl" />
+                  <Input id="new-password" type="password" value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setPasswordMessage(""); }} placeholder="Minimaal 8 tekens" className="h-11 rounded-xl" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="confirm-new-password">Herhaal nieuw wachtwoord</Label>
-                  <Input id="confirm-new-password" type="password" value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setPasswordMessage(""); }} placeholder="Herhaal je nieuwe wachtwoord" className="h-11 rounded-2xl" />
+                  <Input id="confirm-new-password" type="password" value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setPasswordMessage(""); }} placeholder="Herhaal je nieuwe wachtwoord" className="h-11 rounded-xl" />
                 </div>
                 {passwordMessage ? <p className="text-sm text-slate-600">{passwordMessage}</p> : null}
                 <div className="space-y-2 pt-1">
-                  <Button type="submit" className="w-full rounded-2xl" disabled={isSavingPassword}>{isSavingPassword ? "Opslaan..." : "Opslaan"}</Button>
-                  <Button type="button" variant="outline" className="w-full rounded-2xl" disabled={isSavingPassword} onClick={() => setIsPasswordModalOpen(false)}>Annuleren</Button>
+                  <Button type="submit" className="w-full rounded-xl" disabled={isSavingPassword}>{isSavingPassword ? "Opslaan..." : "Opslaan"}</Button>
+                  <Button type="button" variant="outline" className="w-full rounded-xl" disabled={isSavingPassword} onClick={() => setIsPasswordModalOpen(false)}>Annuleren</Button>
                 </div>
               </form>
             </div>
@@ -2157,7 +2228,7 @@ export default function SaldoTrackerApp() {
 
       {isFixedChargeModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setIsFixedChargeModalOpen(false)}>
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="space-y-4">
               <h2 className="text-xl font-bold text-slate-900">Post aanmaken of verwijderen</h2>
               <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
@@ -2166,16 +2237,16 @@ export default function SaldoTrackerApp() {
                   <Input
                     id="fixed-charge-name" value={fixedChargeForm.name}
                     onChange={(e) => setFixedChargeForm((prev) => ({ ...prev, name: e.target.value, message: "" }))}
-                    placeholder="Bijv. Vaste lasten najaar 2026" className="h-12 rounded-2xl"
+                    placeholder="Bijv. Vaste lasten najaar 2026" className="h-12 rounded-xl"
                   />
                 </div>
-                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 rounded-2xl">
+                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 rounded-xl">
                   <PlusCircle className="mr-2 h-4 w-4" />
                   {isSavingFixedCharge ? "Aanmaken..." : "Aanmaken"}
                 </Button>
               </div>
               {fixedChargeForm.message ? (
-                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
               ) : null}
               {fixedCharges.length > 0 ? (
                 <div className="space-y-2">
@@ -2185,7 +2256,7 @@ export default function SaldoTrackerApp() {
                       const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
                       const isDeleting = deletingFixedChargeId === charge.id;
                       return (
-                        <div key={charge.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
+                        <div key={charge.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
                           <div className="min-w-0">
                             <p className="truncate font-medium text-slate-900">{charge.name}</p>
                             <p className="text-sm text-slate-500">
@@ -2194,7 +2265,7 @@ export default function SaldoTrackerApp() {
                             </p>
                           </div>
                           <Button
-                            type="button" variant="outline" className="shrink-0 rounded-2xl"
+                            type="button" variant="outline" className="shrink-0 rounded-xl"
                             disabled={transactionCount > 0 || isDeleting}
                             onClick={() => deleteFixedCharge(charge)}
                           >
@@ -2207,7 +2278,7 @@ export default function SaldoTrackerApp() {
                   </div>
                 </div>
               ) : null}
-              <Button type="button" variant="outline" className="w-full rounded-2xl" onClick={() => setIsFixedChargeModalOpen(false)}>Sluiten</Button>
+              <Button type="button" variant="outline" className="w-full rounded-xl" onClick={() => setIsFixedChargeModalOpen(false)}>Sluiten</Button>
             </div>
           </div>
         </div>
@@ -2215,7 +2286,7 @@ export default function SaldoTrackerApp() {
 
       {isAddUserModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => { if (isSavingUser) return; setIsAddUserModalOpen(false); }}>
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="space-y-4">
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Gebruiker toevoegen</h2>
@@ -2224,20 +2295,20 @@ export default function SaldoTrackerApp() {
               <form onSubmit={createUser} className="space-y-3">
                 <div className="space-y-2">
                   <Label htmlFor="new-user-username">Gebruikersnaam</Label>
-                  <Input id="new-user-username" value={addUserForm.username} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, username: e.target.value })); setAddUserMessage(""); }} placeholder="gebruikersnaam" autoCapitalize="none" autoComplete="off" className="h-11 rounded-2xl" />
+                  <Input id="new-user-username" value={addUserForm.username} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, username: e.target.value })); setAddUserMessage(""); }} placeholder="gebruikersnaam" autoCapitalize="none" autoComplete="off" className="h-11 rounded-xl" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="new-user-name">Volledige naam</Label>
-                  <Input id="new-user-name" value={addUserForm.name} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, name: e.target.value })); setAddUserMessage(""); }} placeholder="volledige naam" autoComplete="off" className="h-11 rounded-2xl" />
+                  <Input id="new-user-name" value={addUserForm.name} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, name: e.target.value })); setAddUserMessage(""); }} placeholder="volledige naam" autoComplete="off" className="h-11 rounded-xl" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="new-user-password">Wachtwoord</Label>
-                  <Input id="new-user-password" type="password" value={addUserForm.password} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, password: e.target.value })); setAddUserMessage(""); }} placeholder="Minimaal 8 tekens" autoComplete="new-password" className="h-11 rounded-2xl" />
+                  <Input id="new-user-password" type="password" value={addUserForm.password} onChange={(e) => { setAddUserForm((prev) => ({ ...prev, password: e.target.value })); setAddUserMessage(""); }} placeholder="Minimaal 8 tekens" autoComplete="new-password" className="h-11 rounded-xl" />
                 </div>
                 {addUserMessage ? <p className="text-sm text-slate-600">{addUserMessage}</p> : null}
                 <div className="space-y-2 pt-1">
-                  <Button type="submit" className="w-full rounded-2xl" disabled={isSavingUser}>{isSavingUser ? "Toevoegen..." : "Toevoegen"}</Button>
-                  <Button type="button" variant="outline" className="w-full rounded-2xl" disabled={isSavingUser} onClick={() => setIsAddUserModalOpen(false)}>Sluiten</Button>
+                  <Button type="submit" className="w-full rounded-xl" disabled={isSavingUser}>{isSavingUser ? "Toevoegen..." : "Toevoegen"}</Button>
+                  <Button type="button" variant="outline" className="w-full rounded-xl" disabled={isSavingUser} onClick={() => setIsAddUserModalOpen(false)}>Sluiten</Button>
                 </div>
               </form>
             </div>
@@ -2246,26 +2317,70 @@ export default function SaldoTrackerApp() {
       ) : null}
 
       {selectedUser ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div ref={userModalRef} className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
-            <div className="space-y-5 text-center">
-              <h2 className="text-2xl font-bold text-slate-900">{selectedUser.name}</h2>
-              <div className="flex justify-center">
-                <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="h-56 w-56 ring-4 ring-slate-100" fallbackClassName="text-2xl" />
-              </div>
-              <div className="space-y-3 rounded-2xl bg-slate-50 p-4 text-left">
-                <p className="text-base text-slate-700">
-                  <span className="font-semibold text-slate-900">{activeFinanceCategory === "saldo" ? "Huidig saldo:" : activeFinanceCategory === "boete" ? "Openstaande boetes:" : "Betaald voor deze post:"}</span> {euro(selectedUser.balance)}
-                </p>
-                {activeFinanceCategory === "saldo" ? (
-                  <p className="text-base text-slate-700"><span className="font-semibold text-slate-900">Totaal uitgegeven:</span> {euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}</p>
-                ) : null}
-              </div>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center">
+          <motion.div
+            ref={userModalRef}
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl"
+          >
+            <div className="flex items-start justify-between">
+              <span className="rounded-full bg-[#f3f4f6] px-2.5 py-1 text-xs font-medium text-slate-600">{getRoleLabel(selectedUser.role)}</span>
+              <button
+                type="button"
+                onClick={() => setSelectedUser(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                aria-label="Sluiten"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-          </div>
+            <div className="mt-1 text-center">
+              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-28 w-28 ring-4 ring-[#f3f4f6]" fallbackClassName="text-2xl" />
+              <p className="mt-3 text-lg font-semibold text-slate-900">{selectedUser.name}</p>
+              <p className="text-sm text-slate-500">@{selectedUser.username}</p>
+            </div>
+            <div className={`mt-5 grid gap-3 ${activeFinanceCategory === "saldo" ? "grid-cols-2" : "grid-cols-1"}`}>
+              <div className="rounded-xl bg-[#f3f4f6] p-4">
+                <p className="text-xs text-slate-500">{activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Openstaande boetes" : "Betaald voor deze post"}</p>
+                <p className={`mt-1 text-xl font-bold tracking-tight ${activeFinanceCategory === "boete" && selectedUser.balance > 0 ? "text-red-600" : "text-slate-900"}`}>
+                  {euro(selectedUser.balance)}
+                </p>
+              </div>
+              {activeFinanceCategory === "saldo" ? (
+                <div className="rounded-xl bg-[#f3f4f6] p-4">
+                  <p className="text-xs text-slate-500">Totaal uitgegeven</p>
+                  <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">{euro(totalPositivePerUser.get(selectedUser.id) ?? 0)}</p>
+                </div>
+              ) : null}
+            </div>
+            {selectedUserTransactions.length > 0 ? (
+              <div className="mt-4">
+                <p className="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Laatste transacties</p>
+                <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
+                  {selectedUserTransactions.map((transaction) => {
+                    const isBoete = transaction.category === "boete";
+                    return (
+                      <div key={transaction.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-900">{getTransactionKindLabel(transaction)}</p>
+                          <p className="text-xs text-slate-500">{formatDate(transaction.created_at)}</p>
+                        </div>
+                        <p className={`shrink-0 text-sm font-semibold ${isBoete ? "text-red-600" : "text-slate-900"}`}>
+                          {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </motion.div>
         </div>
       ) : null}
 
+      {isProfilePageOpen ? null : (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
         <div className="mx-auto grid w-full max-w-md grid-cols-3 py-3">
           <button onClick={() => setActiveMainTab("saldo")} className="flex w-full flex-col items-center justify-center">
@@ -2282,6 +2397,7 @@ export default function SaldoTrackerApp() {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }
