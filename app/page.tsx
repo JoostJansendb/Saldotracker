@@ -904,7 +904,7 @@ export default function SaldoTrackerApp() {
   const totalBalance = useMemo(() => visibleUsers.reduce((sum, user) => sum + user.balance, 0), [visibleUsers]);
   const financeCategoryDescription = activeFinanceCategory === "saldo"
     ? "Teamsaldo totaal"
-    : activeFinanceCategory === "boete" ? "Openstaande boetes totaal" : "Totaal saldo";
+    : activeFinanceCategory === "boete" ? "Boetes totaal" : "Totaal saldo";
   const financeCategoryTotal = activeFinanceCategory === "vaste_lasten" ? vasteLastenTotal : totalBalance;
   const financeCategoryTotalParts = splitEuro(financeCategoryTotal);
   // Seizoen (boetes) en post (vaste lasten) horen bij de lijst eronder, dus ze staan onder de sectiekop, net als het saldofilter.
@@ -1783,7 +1783,7 @@ export default function SaldoTrackerApp() {
                                 <span className="block h-7 w-7 shrink-0 rounded-full border-2 border-slate-300" aria-label="Nog niet betaald" />
                               )
                             ) : (
-                              <p className={`shrink-0 font-semibold ${activeFinanceCategory === "boete" && user.balance > 0 ? "text-red-600" : "text-slate-900"}`}>
+                              <p className="shrink-0 font-semibold text-slate-900">
                                 {euro(user.balance)}
                               </p>
                             )}
@@ -1800,71 +1800,73 @@ export default function SaldoTrackerApp() {
                     </div>
                     {categoryFilterBlock}
                     {activeFinanceCategory === "saldo" ? (
-                      <div className="space-y-3 rounded-xl bg-white p-3 shadow-sm">
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div>
-                            <Label htmlFor="saldo-transaction-user-filter" className="text-xs uppercase tracking-wide text-slate-500">Gebruiker</Label>
-                            <select
-                              id="saldo-transaction-user-filter"
-                              value={saldoTransactionUserFilter}
-                              onChange={(e) => setSaldoTransactionUserFilter(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                            >
-                              <option value={allUsersValue}>Alle gebruikers</option>
-                              {saldoTransactionUsers.map((user) => (
-                                <option key={user.id} value={user.id}>{user.name}</option>
-                              ))}
-                            </select>
+                      <div className="pb-2">
+                        <div className="space-y-3 rounded-xl bg-white p-3 shadow-sm">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div>
+                              <Label htmlFor="saldo-transaction-user-filter" className="text-xs uppercase tracking-wide text-slate-500">Gebruiker</Label>
+                              <select
+                                id="saldo-transaction-user-filter"
+                                value={saldoTransactionUserFilter}
+                                onChange={(e) => setSaldoTransactionUserFilter(e.target.value)}
+                                className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                              >
+                                <option value={allUsersValue}>Alle gebruikers</option>
+                                {saldoTransactionUsers.map((user) => (
+                                  <option key={user.id} value={user.id}>{user.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <Label htmlFor="saldo-transaction-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                              <select
+                                id="saldo-transaction-season-filter"
+                                value={saldoTransactionSeasonFilter}
+                                onChange={(e) => setSaldoTransactionSeasonFilter(e.target.value)}
+                                className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                              >
+                                <option value={allTimeSeasonValue}>Alle seizoenen</option>
+                                {statsSeasons.map((season) => (
+                                  <option key={season} value={season}>{season}</option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                           <div>
-                            <Label htmlFor="saldo-transaction-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                            <select
-                              id="saldo-transaction-season-filter"
-                              value={saldoTransactionSeasonFilter}
-                              onChange={(e) => setSaldoTransactionSeasonFilter(e.target.value)}
-                              className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                            >
-                              <option value={allTimeSeasonValue}>Alle seizoenen</option>
-                              {statsSeasons.map((season) => (
-                                <option key={season} value={season}>{season}</option>
-                              ))}
-                            </select>
+                            <Label className="text-xs uppercase tracking-wide text-slate-500">Richting</Label>
+                            <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-[#f3f4f6] p-1">
+                              {transactionDirectionOptions.map((option) => {
+                                const isActive = saldoTransactionDirectionFilter === option.value;
+                                return (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    onClick={() => setSaldoTransactionDirectionFilter(option.value)}
+                                    className={`h-9 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
+                                  >
+                                    {option.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </div>
-                        </div>
-                        <div>
-                          <Label className="text-xs uppercase tracking-wide text-slate-500">Richting</Label>
-                          <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-[#f3f4f6] p-1">
-                            {transactionDirectionOptions.map((option) => {
-                              const isActive = saldoTransactionDirectionFilter === option.value;
-                              return (
-                                <button
-                                  key={option.value}
-                                  type="button"
-                                  onClick={() => setSaldoTransactionDirectionFilter(option.value)}
-                                  className={`h-9 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
-                                >
-                                  {option.label}
-                                </button>
-                              );
-                            })}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm text-slate-500">
+                              {filteredSaldoTransactions.length} van {saldoTransactions.length} transacties
+                              <span className="text-slate-400"> &middot; </span>
+                              totaal <span className="font-medium text-slate-900">{euro(filteredSaldoTransactionsTotal)}</span>
+                            </p>
+                            {isSaldoTransactionFilterActive ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                onClick={() => { setSaldoTransactionUserFilter(allUsersValue); setSaldoTransactionSeasonFilter(allTimeSeasonValue); setSaldoTransactionDirectionFilter("alle"); }}
+                                className="h-9 rounded-full px-3 text-sm"
+                              >
+                                Filters wissen
+                              </Button>
+                            ) : null}
                           </div>
-                        </div>
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-sm text-slate-500">
-                            {filteredSaldoTransactions.length} van {saldoTransactions.length} transacties
-                            <span className="text-slate-400"> &middot; </span>
-                            totaal <span className="font-medium text-slate-900">{euro(filteredSaldoTransactionsTotal)}</span>
-                          </p>
-                          {isSaldoTransactionFilterActive ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              onClick={() => { setSaldoTransactionUserFilter(allUsersValue); setSaldoTransactionSeasonFilter(allTimeSeasonValue); setSaldoTransactionDirectionFilter("alle"); }}
-                              className="h-9 rounded-full px-3 text-sm"
-                            >
-                              Filters wissen
-                            </Button>
-                          ) : null}
                         </div>
                       </div>
                     ) : null}
@@ -1878,14 +1880,14 @@ export default function SaldoTrackerApp() {
                         const isBoete = transaction.category === "boete";
                         return (
                           <div key={transaction.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
-                            <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${isBoete ? "bg-red-50 text-red-600" : "bg-[#f3f4f6] text-slate-700"}`}>
+                            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700">
                               {isBoete ? <Receipt className="h-5 w-5" /> : isIncoming ? <ArrowDownLeft className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
                             </span>
                             <div className="min-w-0 flex-1">
                               <p className="truncate font-medium text-slate-900">{transaction.name}</p>
                               <p className="truncate text-sm text-slate-500">{getTransactionKindLabel(transaction)} · {formatDate(transaction.created_at)}</p>
                             </div>
-                            <p className={`shrink-0 font-semibold ${isBoete ? "text-red-600" : "text-slate-900"}`}>
+                            <p className="shrink-0 font-semibold text-slate-900">
                               {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
                             </p>
                           </div>
@@ -1958,7 +1960,7 @@ export default function SaldoTrackerApp() {
                                   <div className="min-w-0 flex-1">
                                     <p className="truncate font-medium">{user.name}</p>
                                     <p className={`truncate text-sm ${selected ? "text-slate-300" : "text-slate-500"}`}>
-                                      {activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Openstaande boetes" : "Betaald voor deze post"}: {euro(user.balance)}
+                                      {activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Boetes" : "Betaald voor deze post"}: {euro(user.balance)}
                                     </p>
                                   </div>
                                   <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${selected ? "bg-white text-slate-900" : "border-2 border-slate-300"}`}>
@@ -2437,8 +2439,8 @@ export default function SaldoTrackerApp() {
             </div>
             <div className={`mt-5 grid gap-3 ${activeFinanceCategory === "saldo" ? "grid-cols-2" : "grid-cols-1"}`}>
               <div className="rounded-xl bg-[#f3f4f6] p-4">
-                <p className="text-xs text-slate-500">{activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Openstaande boetes" : "Betaald voor deze post"}</p>
-                <p className={`mt-1 text-xl font-bold tracking-tight ${activeFinanceCategory === "boete" && selectedUser.balance > 0 ? "text-red-600" : "text-slate-900"}`}>
+                <p className="text-xs text-slate-500">{activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Boetes" : "Betaald voor deze post"}</p>
+                <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   {euro(selectedUser.balance)}
                 </p>
               </div>
@@ -2461,7 +2463,7 @@ export default function SaldoTrackerApp() {
                           <p className="truncate text-sm font-medium text-slate-900">{getTransactionKindLabel(transaction)}</p>
                           <p className="text-xs text-slate-500">{formatDate(transaction.created_at)}</p>
                         </div>
-                        <p className={`shrink-0 text-sm font-semibold ${isBoete ? "text-red-600" : "text-slate-900"}`}>
+                        <p className="shrink-0 text-sm font-semibold text-slate-900">
                           {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
                         </p>
                       </div>
