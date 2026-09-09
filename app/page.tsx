@@ -2,13 +2,11 @@
 
 import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, Users, ArrowLeftRight, Plus, ArrowDownLeft, ArrowUpRight, Receipt, X } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, Users, ArrowLeftRight, Plus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -138,6 +136,7 @@ const pullRefreshMinimumDurationMs = 650;
 const allTimeSeasonValue = "alle";
 const allUsersValue = "alle";
 const transactionPageSize = 30;
+const maxUsernameLength = 12;
 
 const statsKpiDetailTitles: Record<StatsKpiKey, { title: string; description: string }> = {
   count: { title: "Vaakst opgewaardeerd", description: "Top 5 op aantal opwaarderingen." },
@@ -369,7 +368,7 @@ const UsageLineChart = React.memo(function UsageLineChart({
 
   return (
     <div className="space-y-3">
-      <div className="h-64 w-full rounded-xl border border-slate-200 bg-white p-3">
+      <div className="h-64 w-full">
         <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Gebruiksstatistieken grafiek">
           {tickValues.map((tick) => {
             const y = paddingTop + graphHeight - (tick / maxValue) * graphHeight;
@@ -407,7 +406,6 @@ const UsageLineChart = React.memo(function UsageLineChart({
           })}
         </svg>
       </div>
-      <p className="text-xs text-slate-500"> </p>
     </div>
   );
 });
@@ -417,6 +415,8 @@ export default function SaldoTrackerApp() {
   const [users, setUsers] = useState<User[]>([]);
   const [appEvents, setAppEvents] = useState<AppEvent[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  // De spelerspopup toont de cijfers van één categorie: vanaf de saldotab de actieve, vanuit de statistieken altijd saldo.
+  const [selectedUserCategory, setSelectedUserCategory] = useState<FinanceCategory>("saldo");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -458,6 +458,10 @@ export default function SaldoTrackerApp() {
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [addUserForm, setAddUserForm] = useState({ username: "", name: "", password: "" });
   const [addUserMessage, setAddUserMessage] = useState("");
+  const [isEditingUsername, setIsEditingUsername] = useState(false);
+  const [usernameDraft, setUsernameDraft] = useState("");
+  const [usernameMessage, setUsernameMessage] = useState("");
+  const [isSavingUsername, setIsSavingUsername] = useState(false);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [eventAggregation, setEventAggregation] = useState<EventAggregation>("day");
   const [excludeJoostEvents, setExcludeJoostEvents] = useState(false);
@@ -878,13 +882,13 @@ export default function SaldoTrackerApp() {
   // De drie meest recente regels van de aangeklikte speler, binnen de categorie die nu open staat.
   const selectedUserTransactions = useMemo(() => {
     if (!selectedUser) return [];
-    const source = activeFinanceCategory === "saldo"
+    const source = selectedUserCategory === "saldo"
       ? saldoTransactions
-      : activeFinanceCategory === "boete"
+      : selectedUserCategory === "boete"
         ? boeteTransactions
         : vasteLastenTransactions.filter((transaction) => transaction.fixed_charge_id === activeFixedChargeId);
     return source.filter((transaction) => transaction.user_id === selectedUser.id).slice(0, 3);
-  }, [activeFinanceCategory, activeFixedChargeId, boeteTransactions, saldoTransactions, selectedUser, vasteLastenTransactions]);
+  }, [activeFixedChargeId, boeteTransactions, saldoTransactions, selectedUser, selectedUserCategory, vasteLastenTransactions]);
   const filteredSaldoTransactionsTotal = useMemo(
     () => Number(filteredSaldoTransactions.reduce((sum, transaction) => sum + transaction.amount_change, 0).toFixed(2)),
     [filteredSaldoTransactions],
@@ -1175,84 +1179,68 @@ export default function SaldoTrackerApp() {
 
   const isDevUser = isDev(currentUser?.role ?? "user");
   const devUsageSection = isDevUser ? (
-    <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
-      <Card className="rounded-xl border-0 shadow-sm">
-        <CardHeader className="pb-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <CardTitle className="text-xl">Gebruikersstatistieken</CardTitle>
-              <p className="mt-1 text-sm text-slate-500">`login` en `session_resume` events over tijd.</p>
-            </div>
-            <div className="w-full space-y-3 sm:w-56">
-              <div>
-                <Label htmlFor="event-aggregation">Aggregatie</Label>
-                <select
-                  id="event-aggregation"
-                  value={eventAggregation}
-                  onChange={(e) => setEventAggregation(e.target.value as EventAggregation)}
-                  className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-red-300 focus:ring-2 focus:ring-red-100"
-                >
-                  {eventAggregationOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </div>
-              <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={excludeJoostEvents}
-                  onChange={(e) => setExcludeJoostEvents(e.target.checked)}
-                  className="h-4 w-4 accent-slate-900"
-                />
-                <span>Developer uitsluiten</span>
-              </label>
-            </div>
+    <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.1 }} className="space-y-4">
+      <section className="space-y-2">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-sm font-semibold text-slate-900">Gebruikersstatistieken</h2>
+          <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{appEventTableRows.length}</span>
+        </div>
+        <div className="space-y-3 rounded-xl bg-white p-3 shadow-sm">
+          <div>
+            <Label htmlFor="event-aggregation" className="text-xs uppercase tracking-wide text-slate-500">Aggregatie</Label>
+            <select
+              id="event-aggregation"
+              value={eventAggregation}
+              onChange={(e) => setEventAggregation(e.target.value as EventAggregation)}
+              className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+            >
+              {eventAggregationOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {aggregatedAppEvents.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-              Nog geen `login` of `session_resume` events beschikbaar voor de grafiek.
-            </div>
-          ) : (
+          <label className="flex items-center gap-3 rounded-xl bg-[#f3f4f6] px-3 py-2.5 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={excludeJoostEvents}
+              onChange={(e) => setExcludeJoostEvents(e.target.checked)}
+              className="h-4 w-4 accent-slate-900"
+            />
+            <span>Developer uitsluiten</span>
+          </label>
+        </div>
+      </section>
+
+      <div className="rounded-xl bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-900">Logins over tijd</h3>
+          <span className="text-xs text-slate-500">login + session_resume</span>
+        </div>
+        {aggregatedAppEvents.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">Nog geen events beschikbaar voor de grafiek.</p>
+        ) : (
+          <div className="mt-3">
             <UsageLineChart points={aggregatedAppEvents} />
-          )}
-
-          <div className="space-y-3">
-            <div>
-              <h4 className="text-base font-semibold text-slate-900">Gebeurtenissen</h4>
-              <p className="mt-1 text-sm text-slate-500">Chronologisch overzicht van de events die in deze grafiek meetellen.</p>
-            </div>
-
-            <div className="overflow-hidden rounded-xl border bg-white">
-              <div className="max-h-72 overflow-y-auto">
-                <Table>
-                  <TableHeader className="sticky top-0 z-10 bg-white">
-                    <TableRow>
-                      <TableHead>Datum en tijd</TableHead>
-                      <TableHead>Naam</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {appEventTableRows.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={2} className="text-center text-slate-500">Nog geen gebeurtenissen beschikbaar.</TableCell>
-                      </TableRow>
-                    ) : (
-                      appEventTableRows.map((row) => (
-                        <TableRow key={row.id}>
-                          <TableCell className="font-medium">{row.createdAt}</TableCell>
-                          <TableCell>{row.name}</TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
           </div>
-        </CardContent>
-      </Card>
+        )}
+      </div>
+
+      <div className="rounded-xl bg-white p-4 shadow-sm">
+        <h3 className="text-base font-semibold text-slate-900">Gebeurtenissen</h3>
+        <p className="mt-0.5 text-sm text-slate-500">Chronologisch, alleen de events die in de grafiek meetellen.</p>
+        {appEventTableRows.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">Nog geen gebeurtenissen beschikbaar.</p>
+        ) : (
+          <div className="mt-3 max-h-72 divide-y divide-slate-100 overflow-y-auto rounded-lg bg-[#f3f4f6] px-3">
+            {appEventTableRows.map((row) => (
+              <div key={row.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                <span className="truncate font-medium text-slate-900">{row.name}</span>
+                <span className="shrink-0 tabular-nums text-slate-500">{row.createdAt}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </motion.div>
   ) : null;
 
@@ -1272,6 +1260,59 @@ export default function SaldoTrackerApp() {
     } catch (loginFlowError) {
       console.error("Fout tijdens inloggen:", loginFlowError);
       setError("Inloggen mislukt door een onverwachte fout. Probeer opnieuw.");
+    }
+  };
+
+  const openUserPopup = (user: User, category: FinanceCategory) => {
+    setSelectedUserCategory(category);
+    setSelectedUser(user);
+  };
+
+  // Vanuit een ranglijst: de statistiekpopup dicht, de spelerspopup open met de saldocijfers.
+  const openUserPopupFromStats = (userId: string) => {
+    const user = users.find((u) => u.id === userId);
+    if (!user) return;
+    setActiveStatsKpi(null);
+    openUserPopup(user, "saldo");
+  };
+
+  const startEditingUsername = () => {
+    if (!currentUser) return;
+    setUsernameDraft(currentUser.username);
+    setUsernameMessage("");
+    setIsEditingUsername(true);
+  };
+
+  const saveUsername = async () => {
+    if (!currentUser) return;
+    const draft = usernameDraft.trim();
+    if (draft.length < 2) { setUsernameMessage("Minimaal 2 tekens."); return; }
+    if (draft.length > maxUsernameLength) { setUsernameMessage(`Maximaal ${maxUsernameLength} tekens.`); return; }
+    if (draft === currentUser.username) { setIsEditingUsername(false); return; }
+
+    setIsSavingUsername(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) { setUsernameMessage("Sessie verlopen. Log opnieuw in."); return; }
+
+      const response = await fetch("/api/profile/username", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ username: draft }),
+      });
+      const result = await response.json();
+      if (!response.ok) { setUsernameMessage(result.error ?? "Gebruikersnaam wijzigen mislukt."); return; }
+
+      const username: string = result.username;
+      setCurrentUser((prev) => prev ? { ...prev, username } : prev);
+      setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, username } : u));
+      setIsEditingUsername(false);
+      setUsernameMessage(`Je logt voortaan in met "${username}".`);
+    } catch (saveError) {
+      console.error("Fout bij wijzigen gebruikersnaam:", saveError);
+      setUsernameMessage("Gebruikersnaam wijzigen mislukt door een onverwachte fout.");
+    } finally {
+      setIsSavingUsername(false);
     }
   };
 
@@ -1520,7 +1561,7 @@ export default function SaldoTrackerApp() {
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 flex items-center justify-center">
+      <div className="min-h-screen bg-[#f3f4f6] flex items-center justify-center">
         <div className="text-sm text-slate-500">Laden...</div>
       </div>
     );
@@ -1528,37 +1569,31 @@ export default function SaldoTrackerApp() {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 p-4 md:p-8">
+      <div className="min-h-screen bg-[#f3f4f6] p-4 md:p-8">
         <div className="mx-auto flex min-h-[85vh] max-w-md items-center justify-center">
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="w-full">
-            <Card className="rounded-xl border-0 shadow-xl">
-              <CardHeader className="space-y-3 text-center">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg">
-                  <Wallet className="h-7 w-7" />
-                </div>
-                <div>
-                  <CardTitle className="text-2xl font-bold">Saldo Tracker</CardTitle>
-                  <p className="mt-2 text-sm text-slate-500">Log in om de teamsaldo&apos;s te bekijken.</p>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={login} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="username">Gebruikersnaam</Label>
-                    <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Je gebruikersnaam" className="h-12 rounded-xl" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password">Wachtwoord</Label>
-                    <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Je wachtwoord" className="h-12 rounded-xl" />
-                  </div>
-                  {error ? <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div> : null}
-                  <Button type="submit" className="h-12 w-full rounded-xl text-base">Inloggen</Button>
-                </form>
-                <div className="mt-6 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
-                  <p className="font-medium text-slate-800">Versie 1.1.0</p>
-                </div>
-              </CardContent>
-            </Card>
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="w-full space-y-4">
+            <div className="rounded-xl bg-white px-5 py-8 text-center shadow-sm">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-slate-900 text-white">
+                <Wallet className="h-7 w-7" />
+              </div>
+              <h1 className="mt-4 text-2xl font-bold tracking-tight text-slate-900">Saldo Tracker</h1>
+              <p className="mt-1 text-sm text-slate-500">Log in om de teamsaldo&apos;s te bekijken.</p>
+            </div>
+
+            <form onSubmit={login} className="space-y-4 rounded-xl bg-white p-4 shadow-sm">
+              <div className="space-y-2">
+                <Label htmlFor="username" className="text-xs uppercase tracking-wide text-slate-500">Gebruikersnaam</Label>
+                <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Je gebruikersnaam" autoCapitalize="none" autoComplete="username" className="h-12 rounded-xl" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-xs uppercase tracking-wide text-slate-500">Wachtwoord</Label>
+                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Je wachtwoord" autoComplete="current-password" className="h-12 rounded-xl" />
+              </div>
+              {error ? <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div> : null}
+              <Button type="submit" className="h-12 w-full rounded-xl text-base">Inloggen</Button>
+            </form>
+
+            <p className="text-center text-xs text-slate-400">Versie 1.1.0</p>
           </motion.div>
         </div>
       </div>
@@ -1619,8 +1654,45 @@ export default function SaldoTrackerApp() {
                 <p className="text-sm font-medium text-slate-900">{currentUser.name}</p>
               </div>
               <div className="rounded-xl border border-slate-200 px-4 py-2.5">
-                <p className="text-xs text-slate-400">Gebruikersnaam</p>
-                <p className="text-sm font-medium text-slate-900">@{currentUser.username}</p>
+                {isEditingUsername ? (
+                  <form onSubmit={(e) => { e.preventDefault(); void saveUsername(); }} className="space-y-2">
+                    <Label htmlFor="username-edit" className="text-xs text-slate-400">Gebruikersnaam</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-slate-400">@</span>
+                      <Input
+                        id="username-edit"
+                        value={usernameDraft}
+                        onChange={(e) => { setUsernameDraft(e.target.value); setUsernameMessage(""); }}
+                        maxLength={maxUsernameLength}
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        autoFocus
+                        className="h-10 rounded-lg"
+                      />
+                      <span className="shrink-0 text-xs tabular-nums text-slate-400">{usernameDraft.trim().length}/{maxUsernameLength}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button type="submit" disabled={isSavingUsername} className="h-9 flex-1 rounded-lg">{isSavingUsername ? "Opslaan..." : "Opslaan"}</Button>
+                      <Button type="button" variant="outline" disabled={isSavingUsername} onClick={() => { setIsEditingUsername(false); setUsernameMessage(""); }} className="h-9 flex-1 rounded-lg">Annuleren</Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-slate-400">Gebruikersnaam</p>
+                      <p className="truncate text-sm font-medium text-slate-900">@{currentUser.username}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={startEditingUsername}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-600 transition hover:bg-slate-200"
+                      aria-label="Gebruikersnaam wijzigen"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+                {usernameMessage ? <p className="mt-2 text-xs text-slate-500">{usernameMessage}</p> : null}
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl border border-slate-200 px-4 py-2.5">
@@ -1632,7 +1704,7 @@ export default function SaldoTrackerApp() {
                   <p className="text-sm font-medium text-slate-900">{lastDataRefreshAt ? formatDateTime(lastDataRefreshAt) : "-"}</p>
                 </div>
               </div>
-              <p className="px-1 text-xs text-slate-400">Je naam en gebruikersnaam kan alleen een admin aanpassen.</p>
+              <p className="px-1 text-xs text-slate-400">Je naam kan alleen een admin aanpassen. Met je gebruikersnaam log je in.</p>
             </div>
 
             <div className="divide-y divide-slate-100 rounded-xl bg-white p-2 shadow-sm">
@@ -1763,7 +1835,7 @@ export default function SaldoTrackerApp() {
                         const hasPaid = activeFixedChargePerUser.has(user.id);
                         return (
                           <div key={user.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
-                            <button type="button" onClick={() => setSelectedUser(user)} className="shrink-0 rounded-full">
+                            <button type="button" onClick={() => openUserPopup(user, activeFinanceCategory)} className="shrink-0 rounded-full">
                               <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
                             </button>
                             <div className="min-w-0 flex-1">
@@ -1800,7 +1872,7 @@ export default function SaldoTrackerApp() {
                     </div>
                     {categoryFilterBlock}
                     {activeFinanceCategory === "saldo" ? (
-                      <div className="pb-2">
+                      <div className="pb-4">
                         <div className="space-y-3 rounded-xl bg-white p-3 shadow-sm">
                           <div className="grid gap-3 sm:grid-cols-2">
                             <div>
@@ -2024,6 +2096,20 @@ export default function SaldoTrackerApp() {
             ) : activeMainTab === "rijschema" ? (
               <>
                 <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
+                  <div className="rounded-xl bg-white p-3 shadow-sm">
+                    <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
+                    <select
+                      id="ride-season-filter"
+                      value={selectedRideSeason}
+                      onChange={(e) => setSelectedRideSeason(e.target.value)}
+                      className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                    >
+                      {rideScheduleSeasons.map((season) => (
+                        <option key={season} value={season}>{season}</option>
+                      ))}
+                    </select>
+                  </div>
+
                   <div className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="grid grid-cols-3 divide-x divide-slate-100 text-center">
                       <div>
@@ -2045,19 +2131,6 @@ export default function SaldoTrackerApp() {
                     <div className="flex items-center justify-between px-1">
                       <h2 className="text-sm font-semibold text-slate-900">Rijschema</h2>
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{rideSchedule.length}</span>
-                    </div>
-                    <div className="rounded-xl bg-white p-3 shadow-sm">
-                      <Label htmlFor="ride-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
-                      <select
-                        id="ride-season-filter"
-                        value={selectedRideSeason}
-                        onChange={(e) => setSelectedRideSeason(e.target.value)}
-                        className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                      >
-                        {rideScheduleSeasons.map((season) => (
-                          <option key={season} value={season}>{season}</option>
-                        ))}
-                      </select>
                     </div>
                     {rideSchedule.length === 0 ? (
                       <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">Nog geen rijschema voor dit seizoen.</div>
@@ -2189,13 +2262,19 @@ export default function SaldoTrackerApp() {
                     {spenderChartData.length === 0 ? (
                       <p className="mt-3 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                     ) : (
-                      <div className="mt-4 space-y-3">
+                      <div className="mt-4 grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-x-2 gap-y-3">
                         {spenderChartData.map((spender, index) => {
                           const widthPercent = (spender.total / spenderChartMax) * 100;
                           return (
-                            <div key={spender.userId} className="flex items-center gap-3">
-                              <span className="w-20 shrink-0 truncate text-xs font-medium text-slate-700">{spender.username}</span>
-                              <div className="h-2.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[#f3f4f6]">
+                            <Fragment key={spender.userId}>
+                              <button
+                                type="button"
+                                onClick={() => openUserPopupFromStats(spender.userId)}
+                                className="max-w-[7rem] truncate text-left text-xs font-medium text-slate-700 transition hover:text-slate-900"
+                              >
+                                {spender.username}
+                              </button>
+                              <div className="h-2.5 min-w-0 overflow-hidden rounded-full bg-[#f3f4f6]">
                                 <motion.div
                                   initial={{ width: 0 }}
                                   animate={{ width: `${widthPercent}%` }}
@@ -2203,8 +2282,8 @@ export default function SaldoTrackerApp() {
                                   className={`h-full rounded-full ${index === 0 ? "bg-slate-900" : "bg-slate-300"}`}
                                 />
                               </div>
-                              <span className="w-16 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-900">{euro(spender.total)}</span>
-                            </div>
+                              <span className="text-right text-xs font-semibold tabular-nums text-slate-900">{euro(spender.total)}</span>
+                            </Fragment>
                           );
                         })}
                       </div>
@@ -2437,14 +2516,14 @@ export default function SaldoTrackerApp() {
               <p className="mt-3 text-lg font-semibold text-slate-900">{selectedUser.name}</p>
               <p className="text-sm text-slate-500">@{selectedUser.username}</p>
             </div>
-            <div className={`mt-5 grid gap-3 ${activeFinanceCategory === "saldo" ? "grid-cols-2" : "grid-cols-1"}`}>
+            <div className={`mt-5 grid gap-3 ${selectedUserCategory === "saldo" ? "grid-cols-2" : "grid-cols-1"}`}>
               <div className="rounded-xl bg-[#f3f4f6] p-4">
-                <p className="text-xs text-slate-500">{activeFinanceCategory === "saldo" ? "Huidig saldo" : activeFinanceCategory === "boete" ? "Boetes" : "Betaald voor deze post"}</p>
+                <p className="text-xs text-slate-500">{selectedUserCategory === "saldo" ? "Huidig saldo" : selectedUserCategory === "boete" ? "Boetes" : "Betaald voor deze post"}</p>
                 <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   {euro(selectedUser.balance)}
                 </p>
               </div>
-              {activeFinanceCategory === "saldo" ? (
+              {selectedUserCategory === "saldo" ? (
                 <div className="rounded-xl bg-[#f3f4f6] p-4">
                   <p className="text-xs text-slate-500">Totaal uitgegeven</p>
                   <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">{euro(allTimePositivePerUser.get(selectedUser.id) ?? 0)}</p>
@@ -2523,11 +2602,16 @@ export default function SaldoTrackerApp() {
                     })}
                   </div>
                   <div className="mt-2 flex gap-1.5 border-t border-slate-100 pt-2">
-                    {statisticsDetails.histogram.map((bucket, index) => (
-                      <span key={bucket.from} className={`min-w-0 flex-1 truncate text-center text-[10px] tabular-nums ${index === statisticsDetails.averageBucketIndex ? "font-semibold text-slate-900" : "text-slate-500"}`}>
-                        {bucket.from}
-                      </span>
-                    ))}
+                    {statisticsDetails.histogram.map((bucket, index) => {
+                      const isAverageBucket = index === statisticsDetails.averageBucketIndex;
+                      // Meer dan acht kolommen passen niet allemaal met een label op een telefoon: om en om overslaan.
+                      const showLabel = statisticsDetails.histogram.length <= 8 || index % 2 === 0 || isAverageBucket;
+                      return (
+                        <span key={bucket.from} className={`min-w-0 flex-1 whitespace-nowrap text-center text-[9px] tabular-nums leading-none ${isAverageBucket ? "font-semibold text-slate-900" : "text-slate-500"}`}>
+                          {showLabel ? bucket.from : ""}
+                        </span>
+                      );
+                    })}
                   </div>
                   <p className="mt-3 text-center text-xs text-slate-500">
                     Elke kolom is een bucket van {euro(statisticsDetails.bucketSize)}, het label is de ondergrens. De zwarte kolom bevat het gemiddelde van {euro(statistics.averageTopUp)}.
@@ -2540,14 +2624,19 @@ export default function SaldoTrackerApp() {
                   <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                 ) : (
                   statsKpiRanking.map((row, index) => (
-                    <div key={row.userId} className="flex items-center gap-3 rounded-lg bg-[#f3f4f6] px-3 py-2.5">
+                    <button
+                      key={row.userId}
+                      type="button"
+                      onClick={() => openUserPopupFromStats(row.userId)}
+                      className="flex w-full items-center gap-3 rounded-lg bg-[#f3f4f6] px-3 py-2.5 text-left transition hover:bg-slate-200"
+                    >
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-600">{index + 1}</span>
                       <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-9 w-9 shrink-0" />
                       <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{row.name}</p>
                       <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
                         {activeStatsKpi === "count" ? `${row.count}×` : activeStatsKpi === "total" ? euro(row.total) : euro(row.largest)}
                       </p>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
