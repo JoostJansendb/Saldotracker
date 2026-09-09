@@ -141,6 +141,25 @@ function formatDate(dateString: string) {
   return `${dd}/${mm}/${yy}`;
 }
 
+// Voluit, als kop boven de transacties van één dag: "8 september 2026".
+const longDateFormatter = new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "long", year: "numeric" });
+function formatLongDate(dateString: string) {
+  return longDateFormatter.format(new Date(dateString));
+}
+
+// Groeperen op de lokale kalenderdag; de volgorde van de invoer (nieuw naar oud) blijft staan.
+function groupTransactionsByDate(transactions: Transaction[]) {
+  const groups = new Map<string, { key: string; label: string; transactions: Transaction[] }>();
+  for (const transaction of transactions) {
+    const date = new Date(transaction.created_at);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const group = groups.get(key);
+    if (group) group.transactions.push(transaction);
+    else groups.set(key, { key, label: formatLongDate(transaction.created_at), transactions: [transaction] });
+  }
+  return Array.from(groups.values());
+}
+
 function formatDateTime(dateString: string) {
   const date = new Date(dateString);
   const day = String(date.getDate()).padStart(2, "0");
@@ -963,7 +982,10 @@ export default function SaldoTrackerApp() {
   const latestFixedCharge = fixedCharges[0] ?? null;
   // Bewust geen standaardkeuze: de admin moet zelf een post kiezen voor hij een betaling verwerkt.
   const paymentFixedChargeId = addMoneyForm.fixedChargeId;
-  const activeFixedChargeId = selectedFixedChargeId ?? latestFixedCharge?.id ?? "";
+  // Op het betalingen-tabblad stuurt de gekozen betaalpost ook de cijfers, zodat er niet twee selectors
+  // naast elkaar staan die naar een verschillende post kunnen wijzen.
+  const isFixedChargePaymentTab = activeFinanceCategory === "vaste_lasten" && activeSaldoTab === "toevoegen";
+  const activeFixedChargeId = (isFixedChargePaymentTab ? paymentFixedChargeId : "") || selectedFixedChargeId || latestFixedCharge?.id || "";
   const activeFixedCharge = useMemo(
     () => fixedCharges.find((charge) => charge.id === activeFixedChargeId) ?? null,
     [activeFixedChargeId, fixedCharges],
@@ -1088,7 +1110,7 @@ export default function SaldoTrackerApp() {
   const financeCategoryTotal = activeFinanceCategory === "vaste_lasten" ? vasteLastenTotal : totalBalance;
   const financeCategoryTotalParts = splitEuro(financeCategoryTotal);
   // Seizoen (boetes) en post (vaste lasten) horen bij de lijst eronder, dus ze staan onder de sectiekop, net als het saldofilter.
-  const categoryFilterBlock = (
+  const seasonFilterBlock = (
     <>
                     {activeFinanceCategory === "boete" ? (
                       <div className="rounded-xl bg-white p-3 shadow-sm">
@@ -1105,6 +1127,11 @@ export default function SaldoTrackerApp() {
                         </select>
                       </div>
                     ) : null}
+    </>
+  );
+  // Alleen bij Spelers en Transacties: op het betalingen-tabblad kiest de admin de post in het formulier zelf.
+  const fixedChargeFilterBlock = (
+    <>
                     {activeFinanceCategory === "vaste_lasten" ? (
                       <div className="rounded-xl bg-white p-3 shadow-sm">
                         <Label htmlFor="fixed-charge-filter" className="text-xs uppercase tracking-wide text-slate-500">Vaste lasten post</Label>
@@ -1129,6 +1156,12 @@ export default function SaldoTrackerApp() {
                         )}
                       </div>
                     ) : null}
+    </>
+  );
+  const categoryFilterBlock = (
+    <>
+      {seasonFilterBlock}
+      {fixedChargeFilterBlock}
     </>
   );
   const adminTabLabel = activeFinanceCategory === "saldo"
@@ -1163,6 +1196,10 @@ export default function SaldoTrackerApp() {
   const transactionListKey = `${activeFinanceCategory}|${saldoTransactionUserFilter}|${saldoTransactionSeasonFilter}|${saldoTransactionDirectionFilter}`;
   const transactionLimit = transactionPaging.listKey === transactionListKey ? transactionPaging.limit : transactionPageSize;
   const showMoreTransactions = () => setTransactionPaging({ listKey: transactionListKey, limit: transactionLimit + transactionPageSize });
+  const visibleTransactionGroups = useMemo(
+    () => groupTransactionsByDate(filteredTransactions.slice(0, transactionLimit)),
+    [filteredTransactions, transactionLimit],
+  );
 
   const statistics = useMemo(() => {
     const positiveTransactions = statsTransactions.filter((t) => t.amount_change > 0);
@@ -2315,45 +2352,56 @@ export default function SaldoTrackerApp() {
                         {activeFinanceCategory === "saldo" && isSaldoTransactionFilterActive ? "Geen transacties voor dit filter." : "Nog geen transacties."}
                       </div>
                     ) : (
-                      filteredTransactions.slice(0, transactionLimit).map((transaction) => {
-                        const isIncoming = transaction.amount_change >= 0;
-                        const isBoete = transaction.category === "boete";
-                        return (
-                          <div key={transaction.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
-                            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700">
-                              {isBoete ? <Receipt className="h-5 w-5" /> : isIncoming ? <ArrowDownLeft className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate font-medium text-slate-900">{transaction.name}</p>
-                              <p className="truncate text-sm text-slate-500">{getTransactionKindLabel(transaction)} · {formatDate(transaction.created_at)}</p>
+                      <div className="rounded-xl bg-white p-4 shadow-sm">
+                        <div className="rounded-xl bg-[#f3f4f6] px-3 pb-1">
+                          {visibleTransactionGroups.map((group) => (
+                            <div key={group.key}>
+                              <p className="pb-1 pt-3 text-center text-xs font-semibold text-slate-600">{group.label}</p>
+                              <div className="divide-y divide-slate-100">
+                                {group.transactions.map((transaction) => {
+                                  const isIncoming = transaction.amount_change >= 0;
+                                  const isBoete = transaction.category === "boete";
+                                  return (
+                                    <div key={transaction.id} className="flex items-center gap-3 py-2.5">
+                                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-slate-700">
+                                        {isBoete ? <Receipt className="h-4 w-4" /> : isIncoming ? <ArrowDownLeft className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
+                                      </span>
+                                      <div className="min-w-0 flex-1">
+                                        <p className="truncate text-sm font-medium text-slate-900">{transaction.name}</p>
+                                        <p className="truncate text-xs text-slate-500">{getTransactionKindLabel(transaction)}</p>
+                                      </div>
+                                      <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+                                        {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
+                                      </p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
-                            <p className="shrink-0 font-semibold text-slate-900">
-                              {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
-                            </p>
-                          </div>
-                        );
-                      })
+                          ))}
+                        </div>
+                        {filteredTransactions.length > transactionLimit ? (
+                          <button
+                            type="button"
+                            onClick={showMoreTransactions}
+                            className="mt-3 w-full rounded-xl bg-[#f3f4f6] py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                          >
+                            Meer tonen ({filteredTransactions.length - transactionLimit} resterend)
+                          </button>
+                        ) : null}
+                      </div>
                     )}
-                    {filteredTransactions.length > transactionLimit ? (
-                      <button
-                        type="button"
-                        onClick={showMoreTransactions}
-                        className="w-full rounded-xl bg-white py-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
-                      >
-                        Meer tonen ({filteredTransactions.length - transactionLimit} resterend)
-                      </button>
-                    ) : null}
                   </section>
                 ) : isAdmin(currentUser.role) ? (
                   <section className="space-y-4">
-                    {categoryFilterBlock}
+                    {seasonFilterBlock}
                     {activeFinanceCategory === "vaste_lasten" ? (
                       <Button
                         type="button"
                         onClick={() => { setFixedChargeForm((prev) => ({ ...prev, message: "" })); setIsFixedChargeModalOpen(true); }}
                         className="h-12 w-full rounded-xl"
                       >
-                        Post aanmaken of verwijderen
+                        Posten beheren
                       </Button>
                     ) : null}
 
@@ -2397,6 +2445,9 @@ export default function SaldoTrackerApp() {
                                 ))}
                               </select>
                             )}
+                            {activeFixedCharge && paymentFixedChargeId ? (
+                              <p className="text-xs text-slate-400">Aangemaakt op {formatDate(activeFixedCharge.created_at)}</p>
+                            ) : null}
                           </div>
                         ) : null}
                         <div className="space-y-2">
@@ -2980,11 +3031,26 @@ export default function SaldoTrackerApp() {
       ) : null}
 
       {isFixedChargeModalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setIsFixedChargeModalOpen(false)}>
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="space-y-4">
-              <h2 className="text-xl font-bold text-slate-900">Post aanmaken of verwijderen</h2>
-              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f3f4f6] p-3 pb-8 sm:p-4 md:p-6">
+          <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
+            <div className="relative flex h-10 items-center justify-center">
+              <button
+                type="button"
+                onClick={() => setIsFixedChargeModalOpen(false)}
+                className="absolute left-0 flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm transition hover:bg-slate-50"
+                aria-label="Terug"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <h1 className="text-lg font-semibold text-slate-900">Posten beheren</h1>
+            </div>
+
+            <div className="rounded-xl bg-white p-4 shadow-sm">
+              <div className="space-y-1">
+                <h3 className="text-base font-semibold text-slate-900">Nieuwe post</h3>
+                <p className="text-sm text-slate-500">Elke seizoenshelft een eigen post, zodat je ziet wie er voor die periode betaald heeft.</p>
+              </div>
+              <div className="mt-4 space-y-3">
                 <div className="space-y-2">
                   <Label htmlFor="fixed-charge-name">Naam</Label>
                   <Input
@@ -2993,47 +3059,59 @@ export default function SaldoTrackerApp() {
                     placeholder="Bijv. Vaste lasten najaar 2026" className="h-12 rounded-xl"
                   />
                 </div>
-                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 rounded-xl">
+                <Button onClick={createFixedCharge} disabled={isSavingFixedCharge} className="h-12 w-full rounded-xl">
                   <PlusCircle className="mr-2 h-4 w-4" />
                   {isSavingFixedCharge ? "Aanmaken..." : "Aanmaken"}
                 </Button>
+                {fixedChargeForm.message ? (
+                  <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
+                ) : null}
               </div>
-              {fixedChargeForm.message ? (
-                <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
-              ) : null}
-              {fixedCharges.length > 0 ? (
-                <div className="space-y-2">
-                  <Label>Bestaande posten</Label>
-                  <div className="max-h-64 space-y-2 overflow-y-auto">
-                    {fixedCharges.map((charge) => {
-                      const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
-                      const isDeleting = deletingFixedChargeId === charge.id;
-                      return (
-                        <div key={charge.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
-                          <div className="min-w-0">
-                            <p className="truncate font-medium text-slate-900">{charge.name}</p>
-                            <p className="text-sm text-slate-500">
-                              {transactionCount === 0 ? "Nog geen transacties" : `${transactionCount} ${transactionCount === 1 ? "transactie" : "transacties"}`}
-                              {" · "}aangemaakt op {formatDate(charge.created_at)}
-                            </p>
-                          </div>
-                          <Button
-                            type="button" variant="outline" className="shrink-0 rounded-xl"
-                            disabled={transactionCount > 0 || isDeleting}
-                            onClick={() => deleteFixedCharge(charge)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            {isDeleting ? "Bezig..." : "Verwijderen"}
-                          </Button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-              <Button type="button" variant="outline" className="w-full rounded-xl" onClick={() => setIsFixedChargeModalOpen(false)}>Sluiten</Button>
             </div>
-          </div>
+
+            <section className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <h2 className="text-sm font-semibold text-slate-900">Bestaande posten</h2>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{fixedCharges.length}</span>
+              </div>
+              {fixedCharges.length === 0 ? (
+                <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">Nog geen posten aangemaakt.</div>
+              ) : (
+                fixedCharges.map((charge) => {
+                  const transactionCount = fixedChargeTransactionCounts.get(charge.id) ?? 0;
+                  const isDeleting = deletingFixedChargeId === charge.id;
+                  const canDelete = transactionCount === 0;
+                  return (
+                    <div key={charge.id} className="rounded-xl bg-white p-4 shadow-sm">
+                      <div className="flex items-start gap-3">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700">
+                          <Receipt className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="break-words font-medium text-slate-900">{charge.name}</p>
+                          <p className="mt-0.5 text-sm text-slate-500">Aangemaakt op {formatDate(charge.created_at)}</p>
+                          <p className="text-sm text-slate-500">
+                            {transactionCount === 0 ? "Nog geen transacties" : `${transactionCount} ${transactionCount === 1 ? "transactie" : "transacties"}`}
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        type="button" variant="outline" className="mt-3 h-11 w-full rounded-xl"
+                        disabled={!canDelete || isDeleting}
+                        onClick={() => deleteFixedCharge(charge)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {isDeleting ? "Bezig..." : "Verwijderen"}
+                      </Button>
+                      {!canDelete ? (
+                        <p className="mt-2 text-center text-xs text-slate-400">Een post met transacties kan niet verwijderd worden.</p>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </section>
+          </motion.div>
         </div>
       ) : null}
 
