@@ -2,27 +2,34 @@
 
 import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { roleSwitcherName, userRoles, type UserRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, Users, ArrowLeftRight, Plus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
   id: string;
   username: string;
   name: string;
-  role: "admin" | "dev" | "user";
+  role: UserRole;
   balance: number;
   avatar: string;
 };
+
+// Gaat het saldo omhoog of omlaag, en is het ingevoerde bedrag een totaal of een bedrag per speler?
+type SaldoDirection = "opwaardering" | "uitgave";
+type SaldoAmountMode = "totaal" | "individueel";
 
 type AddMoneyFormState = {
   selectedUserIds: string[];
   amount: string;
   message: string;
   fixedChargeId: string;
+  direction: SaldoDirection;
+  amountMode: SaldoAmountMode;
 };
 
 type RideScheduleItem = {
@@ -53,6 +60,29 @@ type Transaction = {
   category: FinanceCategory;
   season: string;
   fixed_charge_id: string | null;
+  // Saldotransacties uit één actie van de admin delen een batch_id; zie scripts/setup-saldo-batches.sql.
+  batch_id: string | null;
+  amount_mode: SaldoAmountMode | null;
+};
+
+// Eén saldo-aanpassing van de admin: een of meer transacties die samen bewerkt worden.
+type SaldoAdjustment = {
+  id: string;
+  created_at: string;
+  direction: SaldoDirection;
+  amountMode: SaldoAmountMode;
+  total: number;
+  perPerson: number;
+  transactions: Transaction[];
+};
+
+type AdjustmentEditState = {
+  adjustment: SaldoAdjustment;
+  selectedUserIds: string[];
+  amount: string;
+  direction: SaldoDirection;
+  amountMode: SaldoAmountMode;
+  message: string;
 };
 
 // Een vaste lasten post: elke seizoenshelft maakt de admin er een aan.
@@ -156,6 +186,75 @@ const financeCategoryOptions: Array<{ value: FinanceCategory; label: string }> =
   { value: "boete", label: "Boetes" },
   { value: "vaste_lasten", label: "Vaste lasten" },
 ];
+
+const saldoDirectionOptions: Array<{ value: SaldoDirection; label: string }> = [
+  { value: "opwaardering", label: "Opwaardering" },
+  { value: "uitgave", label: "Uitgave" },
+];
+
+const saldoAmountModeOptions: Array<{ value: SaldoAmountMode; label: string }> = [
+  { value: "totaal", label: "Totaal bedrag" },
+  { value: "individueel", label: "Individueel bedrag" },
+];
+
+const adjustmentPageSize = 10;
+
+function parseAmountInput(value: string) {
+  return Number(value.trim().replace(",", "."));
+}
+
+// In centen rekenen zodat de som precies het totaal is; de restcenten gaan naar de eerste spelers.
+function splitAmountInCents(totalAmount: number, count: number) {
+  const totalCents = Math.round(totalAmount * 100);
+  const base = Math.floor(totalCents / count);
+  const remainder = totalCents - base * count;
+  return Array.from({ length: count }, (_, index) => (base + (index < remainder ? 1 : 0)) / 100);
+}
+
+// Wat elke geselecteerde speler erbij of eraf krijgt, met het teken al verwerkt.
+function buildSaldoAmounts(userIds: string[], amount: number, direction: SaldoDirection, amountMode: SaldoAmountMode) {
+  const sign = direction === "uitgave" ? -1 : 1;
+  const shares = amountMode === "totaal" ? splitAmountInCents(amount, userIds.length) : userIds.map(() => Math.round(amount * 100) / 100);
+  return new Map(userIds.map((userId, index) => [userId, sign * shares[index]]));
+}
+
+// Dezelfde controles voor het formulier en het bewerkscherm: de foutmelding, of null als alles klopt.
+function validateSaldoInput(userIds: string[], amount: number, amountMode: SaldoAmountMode) {
+  if (userIds.length === 0) return "Selecteer minstens 1 gebruiker.";
+  if (!Number.isFinite(amount) || amount <= 0) return "Vul een bedrag groter dan 0 in.";
+  if (amountMode === "totaal" && Math.round(amount * 100) < userIds.length) {
+    return `Het totaalbedrag is te klein om over ${userIds.length} spelers te verdelen.`;
+  }
+  return null;
+}
+
+// "€ 3,34 of € 3,33" als een totaal niet gelijk te verdelen is, anders één bedrag.
+function describeSharePerPlayer(userIds: string[], amount: number, amountMode: SaldoAmountMode) {
+  if (userIds.length === 0 || validateSaldoInput(userIds, amount, amountMode)) return null;
+  if (amountMode === "individueel") return euro(amount);
+  const uniqueShares = Array.from(new Set(splitAmountInCents(amount, userIds.length))).sort((a, b) => b - a);
+  return uniqueShares.map((share) => euro(share)).join(" of ");
+}
+
+// randomUUID bestaat alleen in een beveiligde context; op http via een LAN-adres valt dit terug op getRandomValues.
+function createBatchId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function summarizeNames(names: string[]) {
+  if (names.length <= 3) return names.join(", ");
+  return `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
+}
+
+// Een min mag niet meer getypt worden: of het bedrag erbij of eraf gaat bepaalt de keuze Opwaardering/Uitgave.
+function blockMinusKey(event: React.KeyboardEvent<HTMLInputElement>) {
+  if (event.key === "-") event.preventDefault();
+}
 
 // Het grote bedrag op de KPI-kaart: de centen lichter, zoals in een bank-app.
 function splitEuro(amount: number) {
@@ -263,6 +362,9 @@ function getRoleLabel(role: User["role"]) {
   if (role === "dev") return "Dev";
   return "Gebruiker";
 }
+function canSwitchRole(user: Pick<User, "name">) { return user.name === roleSwitcherName; }
+
+const roleOptions: Array<{ value: UserRole; label: string }> = userRoles.map((role) => ({ value: role, label: getRoleLabel(role) }));
 
 function getWeekStart(date: Date) {
   const copy = new Date(date);
@@ -322,6 +424,30 @@ const UserAvatar = React.memo(function UserAvatar({ name, avatar, className, fal
     </Avatar>
   );
 });
+
+// Een rij knoppen waarvan er precies één actief is: bewust geen dropdown, dat tikt op een telefoon makkelijker.
+function SegmentedControl<T extends string>({ options, value, onChange, label }: {
+  options: Array<{ value: T; label: string }>; value: T; onChange: (value: T) => void; label: string;
+}) {
+  return (
+    <div role="group" aria-label={label} className="grid gap-1 rounded-xl bg-[#f3f4f6] p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+      {options.map((option) => {
+        const isActive = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={isActive}
+            className={`h-10 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 const UsageLineChart = React.memo(function UsageLineChart({
   points,
@@ -442,7 +568,17 @@ export default function SaldoTrackerApp() {
   const [saldoTransactionUserFilter, setSaldoTransactionUserFilter] = useState(allUsersValue);
   const [saldoTransactionSeasonFilter, setSaldoTransactionSeasonFilter] = useState(allTimeSeasonValue);
   const [saldoTransactionDirectionFilter, setSaldoTransactionDirectionFilter] = useState<TransactionDirection>("alle");
-  const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "" });
+  const [addMoneyForm, setAddMoneyForm] = useState<AddMoneyFormState>({ selectedUserIds: [], amount: "", message: "", fixedChargeId: "", direction: "opwaardering", amountMode: "individueel" });
+  // Zolang setup-saldo-batches.sql niet gedraaid is kunnen aanpassingen niet gegroepeerd en dus niet bewerkt worden.
+  const [hasSaldoBatchColumns, setHasSaldoBatchColumns] = useState(true);
+  const [adjustmentEdit, setAdjustmentEdit] = useState<AdjustmentEditState | null>(null);
+  const [isSavingAdjustment, setIsSavingAdjustment] = useState(false);
+  const [adjustmentMessage, setAdjustmentMessage] = useState("");
+  const [adjustmentLimit, setAdjustmentLimit] = useState(adjustmentPageSize);
+  const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
+  const [roleDraft, setRoleDraft] = useState<UserRole>("user");
+  const [roleMessage, setRoleMessage] = useState("");
+  const [isSavingRole, setIsSavingRole] = useState(false);
   const [isProfilePageOpen, setIsProfilePageOpen] = useState(false);
   const [transactionPaging, setTransactionPaging] = useState({ listKey: "", limit: transactionPageSize });
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
@@ -562,14 +698,29 @@ export default function SaldoTrackerApp() {
       if (data) setUsers(data.map((user) => mergeUserWithAvatarCache({ ...user, avatar: "" })));
 
       const transactionColumns = "id, created_at, user_id, name, amount_change, category, season";
-      const withFixedCharge = await supabase
-        .from("transactions").select(`${transactionColumns}, fixed_charge_id`).order("created_at", { ascending: false });
-      // Zolang setup-vaste-lasten.sql nog niet gedraaid is bestaat fixed_charge_id nog niet.
-      const { data: transactionData, error: transactionError } = withFixedCharge.error
-        ? await supabase.from("transactions").select(transactionColumns).order("created_at", { ascending: false })
-        : withFixedCharge;
+      // Kolommen uit latere migraties (setup-vaste-lasten.sql, setup-saldo-batches.sql) bestaan misschien nog niet:
+      // eerst alles proberen en dan stap voor stap terugvallen, zodat de app blijft werken.
+      const transactionColumnSets = [
+        { columns: `${transactionColumns}, fixed_charge_id, batch_id, amount_mode`, hasBatchColumns: true },
+        { columns: `${transactionColumns}, fixed_charge_id`, hasBatchColumns: false },
+        { columns: transactionColumns, hasBatchColumns: false },
+      ];
+      type TransactionRow = Partial<Transaction> & Pick<Transaction, "id" | "created_at" | "user_id" | "name" | "amount_change" | "category" | "season">;
+      let transactionData: TransactionRow[] | null = null;
+      let transactionError: unknown = null;
+      for (const columnSet of transactionColumnSets) {
+        const result = await supabase.from("transactions").select(columnSet.columns).order("created_at", { ascending: false });
+        transactionError = result.error;
+        if (result.error) continue;
+        // Zonder databasetypes kan supabase-js de kolommen uit een variabele string niet afleiden.
+        transactionData = result.data as unknown as TransactionRow[];
+        setHasSaldoBatchColumns(columnSet.hasBatchColumns);
+        break;
+      }
       if (transactionError) { console.error("Fout bij ophalen transacties:", transactionError); return; }
-      if (transactionData) setTransactions(transactionData.map((transaction) => ({ fixed_charge_id: null, ...transaction })));
+      if (transactionData) {
+        setTransactions(transactionData.map((transaction) => ({ fixed_charge_id: null, batch_id: null, amount_mode: null, ...transaction })));
+      }
 
       const { data: fixedChargeData, error: fixedChargeError } = await supabase
         .from("fixed_charges").select("id, created_at, name").order("created_at", { ascending: false });
@@ -889,6 +1040,31 @@ export default function SaldoTrackerApp() {
         : vasteLastenTransactions.filter((transaction) => transaction.fixed_charge_id === activeFixedChargeId);
     return source.filter((transaction) => transaction.user_id === selectedUser.id).slice(0, 3);
   }, [activeFixedChargeId, boeteTransactions, saldoTransactions, selectedUser, selectedUserCategory, vasteLastenTransactions]);
+  // Saldo-aanpassingen van nieuw naar oud: transacties met dezelfde batch_id horen bij elkaar,
+  // transacties van vóór de migratie tellen als een aanpassing van één speler.
+  const saldoAdjustments = useMemo<SaldoAdjustment[]>(() => {
+    const groups = new Map<string, Transaction[]>();
+    for (const transaction of saldoTransactions) {
+      const key = transaction.batch_id ?? transaction.id;
+      const group = groups.get(key);
+      if (group) group.push(transaction); else groups.set(key, [transaction]);
+    }
+    return Array.from(groups, ([id, group]) => ({
+      id,
+      created_at: group[0].created_at,
+      direction: group[0].amount_change < 0 ? "uitgave" as const : "opwaardering" as const,
+      amountMode: group[0].amount_mode ?? "individueel",
+      total: Number(group.reduce((sum, transaction) => sum + Math.abs(transaction.amount_change), 0).toFixed(2)),
+      perPerson: Math.abs(group[0].amount_change),
+      transactions: group,
+    }));
+  }, [saldoTransactions]);
+  // In het bewerkscherm staan de spelers van het overzicht, plus wie al in de aanpassing zit maar inmiddels admin is.
+  const adjustmentEditUsers = useMemo(() => {
+    if (!adjustmentEdit) return [];
+    const batchUserIds = new Set(adjustmentEdit.adjustment.transactions.map((transaction) => transaction.user_id));
+    return [...sortedUsers, ...users.filter((user) => isAdmin(user.role) && batchUserIds.has(user.id))];
+  }, [adjustmentEdit, sortedUsers, users]);
   const filteredSaldoTransactionsTotal = useMemo(
     () => Number(filteredSaldoTransactions.reduce((sum, transaction) => sum + transaction.amount_change, 0).toFixed(2)),
     [filteredSaldoTransactions],
@@ -966,7 +1142,17 @@ export default function SaldoTrackerApp() {
     : activeFinanceCategory === "boete"
       ? "Selecteer 1 of meerdere gebruikers en geef in één keer hetzelfde boetebedrag."
       : "Kies de vaste lasten post en zet het betaalde bedrag bij de juiste personen.";
-  const amountInputLabel = activeFinanceCategory === "boete" ? "Boetebedrag" : "Bedrag";
+  const amountInputLabel = activeFinanceCategory === "boete"
+    ? "Boetebedrag"
+    : activeFinanceCategory === "saldo"
+      ? addMoneyForm.amountMode === "totaal" ? "Totaal bedrag" : "Bedrag per speler"
+      : "Bedrag";
+  const addMoneySharePerPlayer = activeFinanceCategory === "saldo"
+    ? describeSharePerPlayer(addMoneyForm.selectedUserIds, parseAmountInput(addMoneyForm.amount), addMoneyForm.amountMode)
+    : null;
+  const adjustmentEditSharePerPlayer = adjustmentEdit
+    ? describeSharePerPlayer(adjustmentEdit.selectedUserIds, parseAmountInput(adjustmentEdit.amount), adjustmentEdit.amountMode)
+    : null;
   const saldoTabOptions: Array<{ value: typeof activeSaldoTab; label: string; icon: typeof Users }> = [
     { value: "overzicht", label: "Spelers", icon: Users },
     { value: "transacties", label: "Transacties", icon: ArrowLeftRight },
@@ -1316,6 +1502,45 @@ export default function SaldoTrackerApp() {
     }
   };
 
+  const openRoleModal = () => {
+    if (!currentUser) return;
+    setRoleDraft(currentUser.role);
+    setRoleMessage("");
+    setIsRoleModalOpen(true);
+  };
+
+  const saveRole = async () => {
+    if (!currentUser) return;
+    if (roleDraft === currentUser.role) { setIsRoleModalOpen(false); return; }
+
+    setIsSavingRole(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) { setRoleMessage("Sessie verlopen. Log opnieuw in."); return; }
+
+      const response = await fetch("/api/profile/role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ role: roleDraft }),
+      });
+      const result = await response.json();
+      if (!response.ok) { setRoleMessage(result.error ?? "Rol aanpassen mislukt."); return; }
+
+      const role: UserRole = result.role;
+      setCurrentUser((prev) => prev ? { ...prev, role } : prev);
+      setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, role } : u));
+      // Het admin-tabblad bestaat alleen voor een admin: terug naar het overzicht zodat er geen lege tab blijft staan.
+      setActiveSaldoTab("overzicht");
+      setIsRoleModalOpen(false);
+      await refreshUsers({ force: true, includeAppEvents: isDev(role) });
+    } catch (saveError) {
+      console.error("Fout bij aanpassen rol:", saveError);
+      setRoleMessage("Rol aanpassen mislukt door een onverwachte fout.");
+    } finally {
+      setIsSavingRole(false);
+    }
+  };
+
   const logout = async () => {
     if (currentUser?.id) await logAppEvent(currentUser.id, "logout");
     const { error: logoutError } = await supabase.auth.signOut({ scope: "local" });
@@ -1513,7 +1738,12 @@ export default function SaldoTrackerApp() {
   };
 
   const addMoneyToSelectedUsers = async () => {
-    const parsedAmount = Number(addMoneyForm.amount.replace(",", "."));
+    const parsedAmount = parseAmountInput(addMoneyForm.amount);
+    const isSaldo = activeFinanceCategory === "saldo";
+    if (isSaldo) {
+      const validationError = validateSaldoInput(addMoneyForm.selectedUserIds, parsedAmount, addMoneyForm.amountMode);
+      if (validationError) { setAddMoneyForm((prev) => ({ ...prev, message: validationError })); return; }
+    }
     if (addMoneyForm.selectedUserIds.length === 0) { setAddMoneyForm((prev) => ({ ...prev, message: "Selecteer minstens 1 gebruiker." })); return; }
     if (!Number.isFinite(parsedAmount)) { setAddMoneyForm((prev) => ({ ...prev, message: "Vul een geldig bedrag in." })); return; }
     if (activeFinanceCategory === "vaste_lasten" && parsedAmount <= 0) {
@@ -1525,11 +1755,19 @@ export default function SaldoTrackerApp() {
       return;
     }
 
+    // Bij saldo bepaalt de keuze Opwaardering/Uitgave het teken, en verdeelt "Totaal bedrag" het bedrag over de spelers.
+    const saldoAmounts = isSaldo
+      ? buildSaldoAmounts(addMoneyForm.selectedUserIds, parsedAmount, addMoneyForm.direction, addMoneyForm.amountMode)
+      : null;
+    const batchId = createBatchId();
+    const batchColumns = hasSaldoBatchColumns ? { batch_id: batchId, amount_mode: isSaldo ? addMoneyForm.amountMode : null } : {};
+
     for (const userId of addMoneyForm.selectedUserIds) {
       const user = users.find((u) => u.id === userId);
       if (!user) continue;
-      if (activeFinanceCategory === "saldo") {
-        const newBalance = Number((user.balance + parsedAmount).toFixed(2));
+      const amountChange = saldoAmounts?.get(userId) ?? parsedAmount;
+      if (isSaldo) {
+        const newBalance = Number((user.balance + amountChange).toFixed(2));
         const { error: updateError } = await supabase.from("users").update({ balance: newBalance }).eq("id", userId);
         if (updateError) { setAddMoneyForm((prev) => ({ ...prev, message: "Saldo opslaan mislukt." })); return; }
       }
@@ -1538,25 +1776,143 @@ export default function SaldoTrackerApp() {
         .insert({
           user_id: user.id,
           name: user.name,
-          amount_change: parsedAmount,
+          amount_change: amountChange,
           category: activeFinanceCategory,
           season: activeFinanceCategory === "boete" ? selectedSeason : getCurrentSeason(),
           fixed_charge_id: activeFinanceCategory === "vaste_lasten" ? paymentFixedChargeId : null,
+          ...batchColumns,
         });
       if (transactionError) { setAddMoneyForm((prev) => ({ ...prev, message: "Transactie opslaan mislukt." })); return; }
     }
 
     await refreshUsers();
+    const userCount = addMoneyForm.selectedUserIds.length;
+    const saldoVerb = addMoneyForm.direction === "uitgave" ? "afgeschreven" : "toegevoegd";
     setAddMoneyForm({
       selectedUserIds: [],
       amount: "",
       fixedChargeId: addMoneyForm.fixedChargeId,
-      message: activeFinanceCategory === "saldo"
-        ? `€ ${parsedAmount.toFixed(2)} toegevoegd aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`
+      direction: addMoneyForm.direction,
+      amountMode: addMoneyForm.amountMode,
+      message: isSaldo
+        ? addMoneyForm.amountMode === "totaal"
+          ? `${euro(parsedAmount)} ${saldoVerb}, verdeeld over ${userCount} gebruiker(s).`
+          : `${euro(parsedAmount)} ${saldoVerb} bij ${userCount} gebruiker(s).`
         : activeFinanceCategory === "boete"
-          ? `€ ${parsedAmount.toFixed(2)} boete gegeven aan ${addMoneyForm.selectedUserIds.length} gebruiker(s).`
-          : `€ ${parsedAmount.toFixed(2)} verwerkt voor ${addMoneyForm.selectedUserIds.length} gebruiker(s) op "${fixedChargeNameById.get(paymentFixedChargeId) ?? "vaste lasten"}".`,
+          ? `€ ${parsedAmount.toFixed(2)} boete gegeven aan ${userCount} gebruiker(s).`
+          : `€ ${parsedAmount.toFixed(2)} verwerkt voor ${userCount} gebruiker(s) op "${fixedChargeNameById.get(paymentFixedChargeId) ?? "vaste lasten"}".`,
     });
+  };
+
+  const openAdjustmentEditor = (adjustment: SaldoAdjustment) => {
+    setAdjustmentMessage("");
+    setAdjustmentEdit({
+      adjustment,
+      selectedUserIds: adjustment.transactions.map((transaction) => transaction.user_id),
+      amount: (adjustment.amountMode === "totaal" ? adjustment.total : adjustment.perPerson).toFixed(2),
+      direction: adjustment.direction,
+      amountMode: adjustment.amountMode,
+      message: "",
+    });
+  };
+
+  const updateAdjustmentEdit = (patch: Partial<Omit<AdjustmentEditState, "adjustment" | "message">>) => {
+    setAdjustmentEdit((prev) => (prev ? { ...prev, ...patch, message: "" } : prev));
+  };
+
+  const toggleAdjustmentUser = (id: string) => {
+    setAdjustmentEdit((prev) => prev ? {
+      ...prev,
+      selectedUserIds: prev.selectedUserIds.includes(id) ? prev.selectedUserIds.filter((uid) => uid !== id) : [...prev.selectedUserIds, id],
+      message: "",
+    } : prev);
+  };
+
+  // Bewerken = het verschil verwerken: wie eruit gaat krijgt zijn oude bedrag terug, wie erbij komt krijgt het nieuwe,
+  // wie blijft krijgt alleen het verschil. De datum van de aanpassing blijft staan.
+  const saveAdjustment = async () => {
+    if (!adjustmentEdit) return;
+    const { adjustment, selectedUserIds, direction, amountMode } = adjustmentEdit;
+    const amount = parseAmountInput(adjustmentEdit.amount);
+    const failWith = (message: string) => setAdjustmentEdit((prev) => (prev ? { ...prev, message } : prev));
+    const validationError = validateSaldoInput(selectedUserIds, amount, amountMode);
+    if (validationError) { failWith(validationError); return; }
+
+    const nextAmounts = buildSaldoAmounts(selectedUserIds, amount, direction, amountMode);
+    const previousByUser = new Map(adjustment.transactions.map((transaction) => [transaction.user_id, transaction]));
+    const balanceDeltas = new Map<string, number>();
+    for (const [userId, transaction] of previousByUser) balanceDeltas.set(userId, -transaction.amount_change);
+    for (const [userId, nextAmount] of nextAmounts) balanceDeltas.set(userId, (balanceDeltas.get(userId) ?? 0) + nextAmount);
+
+    setIsSavingAdjustment(true);
+    try {
+      for (const [userId, delta] of balanceDeltas) {
+        const roundedDelta = Math.round(delta * 100) / 100;
+        const user = users.find((u) => u.id === userId);
+        if (roundedDelta === 0 || !user) continue;
+        const { error: balanceError } = await supabase
+          .from("users").update({ balance: Number((user.balance + roundedDelta).toFixed(2)) }).eq("id", userId);
+        if (balanceError) { console.error("Fout bij bijwerken saldo:", balanceError); failWith("Saldo opslaan mislukt. Controleer de saldo's."); return; }
+      }
+
+      for (const [userId, previous] of previousByUser) {
+        const nextAmount = nextAmounts.get(userId);
+        const { error: transactionError } = nextAmount === undefined
+          ? await supabase.from("transactions").delete().eq("id", previous.id)
+          : await supabase.from("transactions").update({ amount_change: nextAmount, amount_mode: amountMode, batch_id: adjustment.id }).eq("id", previous.id);
+        if (transactionError) { console.error("Fout bij bijwerken transactie:", transactionError); failWith("Transactie opslaan mislukt. Controleer de saldo's."); return; }
+      }
+
+      const inserts = selectedUserIds.filter((userId) => !previousByUser.has(userId)).map((userId) => ({
+        user_id: userId,
+        name: users.find((u) => u.id === userId)?.name ?? "Onbekend",
+        amount_change: nextAmounts.get(userId) ?? 0,
+        category: "saldo" as const,
+        season: adjustment.transactions[0].season,
+        fixed_charge_id: null,
+        batch_id: adjustment.id,
+        amount_mode: amountMode,
+        created_at: adjustment.created_at,
+      }));
+      if (inserts.length > 0) {
+        const { error: insertError } = await supabase.from("transactions").insert(inserts);
+        if (insertError) { console.error("Fout bij toevoegen transacties:", insertError); failWith("Transactie opslaan mislukt. Controleer de saldo's."); return; }
+      }
+
+      await refreshUsers({ force: true });
+      setAdjustmentEdit(null);
+      setAdjustmentMessage(`Aanpassing van ${formatDate(adjustment.created_at)} bijgewerkt.`);
+    } finally {
+      setIsSavingAdjustment(false);
+    }
+  };
+
+  // Verwijderen = de hele aanpassing terugdraaien: elke speler krijgt zijn bedrag terug en de transacties gaan weg.
+  const deleteAdjustment = async () => {
+    if (!adjustmentEdit) return;
+    const { adjustment } = adjustmentEdit;
+    const failWith = (message: string) => setAdjustmentEdit((prev) => (prev ? { ...prev, message } : prev));
+    if (!window.confirm(`Deze ${adjustment.direction === "uitgave" ? "uitgave" : "opwaardering"} van ${euro(adjustment.total)} verwijderen? De saldo's worden teruggedraaid.`)) return;
+
+    setIsSavingAdjustment(true);
+    try {
+      for (const transaction of adjustment.transactions) {
+        const user = users.find((u) => u.id === transaction.user_id);
+        if (user) {
+          const { error: balanceError } = await supabase
+            .from("users").update({ balance: Number((user.balance - transaction.amount_change).toFixed(2)) }).eq("id", user.id);
+          if (balanceError) { console.error("Fout bij terugdraaien saldo:", balanceError); failWith("Saldo terugdraaien mislukt. Controleer de saldo's."); return; }
+        }
+        const { error: deleteError } = await supabase.from("transactions").delete().eq("id", transaction.id);
+        if (deleteError) { console.error("Fout bij verwijderen transactie:", deleteError); failWith("Transactie verwijderen mislukt. Controleer de saldo's."); return; }
+      }
+
+      await refreshUsers({ force: true });
+      setAdjustmentEdit(null);
+      setAdjustmentMessage(`Aanpassing van ${formatDate(adjustment.created_at)} verwijderd.`);
+    } finally {
+      setIsSavingAdjustment(false);
+    }
   };
 
   if (isAuthLoading) {
@@ -1725,6 +2081,18 @@ export default function SaldoTrackerApp() {
                 >
                   <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><UserPlus className="h-4 w-4" /></span>
                   <span className="flex-1 text-sm font-medium text-slate-900">Gebruiker toevoegen</span>
+                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                </button>
+              ) : null}
+              {canSwitchRole(currentUser) ? (
+                <button
+                  type="button"
+                  onClick={openRoleModal}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-slate-50"
+                >
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><UserCog className="h-4 w-4" /></span>
+                  <span className="flex-1 text-sm font-medium text-slate-900">Rol aanpassen</span>
+                  <span className="text-xs text-slate-500">{getRoleLabel(currentUser.role)}</span>
                   <ChevronRight className="h-4 w-4 text-slate-400" />
                 </button>
               ) : null}
@@ -1995,6 +2363,22 @@ export default function SaldoTrackerApp() {
                         <p className="text-sm text-slate-500">{adminSectionDescription}</p>
                       </div>
                       <div className="mt-4 space-y-4">
+                        {activeFinanceCategory === "saldo" ? (
+                          <div className="space-y-2">
+                            <SegmentedControl
+                              label="Opwaardering of uitgave"
+                              options={saldoDirectionOptions}
+                              value={addMoneyForm.direction}
+                              onChange={(direction) => setAddMoneyForm((prev) => ({ ...prev, direction, message: "" }))}
+                            />
+                            <SegmentedControl
+                              label="Totaal bedrag of individueel bedrag"
+                              options={saldoAmountModeOptions}
+                              value={addMoneyForm.amountMode}
+                              onChange={(amountMode) => setAddMoneyForm((prev) => ({ ...prev, amountMode, message: "" }))}
+                            />
+                          </div>
+                        ) : null}
                         {activeFinanceCategory === "vaste_lasten" ? (
                           <div className="space-y-2">
                             <Label htmlFor="payment-fixed-charge">Vaste lasten post</Label>
@@ -2046,24 +2430,93 @@ export default function SaldoTrackerApp() {
                         <div className="space-y-2">
                           <Label htmlFor="amount">{amountInputLabel}</Label>
                           <Input
-                            id="amount" type="number" step="0.01" min={activeFinanceCategory === "vaste_lasten" ? "0" : undefined} value={addMoneyForm.amount}
+                            id="amount" type="number" step="0.01" min={activeFinanceCategory === "boete" ? undefined : "0"} value={addMoneyForm.amount}
                             onChange={(e) => setAddMoneyForm((prev) => ({ ...prev, amount: e.target.value, message: "" }))}
+                            onKeyDown={activeFinanceCategory === "boete" ? undefined : blockMinusKey}
                             placeholder={activeFinanceCategory === "boete" ? "Bijv. 5,00" : "Bijv. 10,50"} className="h-12 rounded-xl"
                           />
+                          {addMoneySharePerPlayer && addMoneyForm.amountMode === "totaal" ? (
+                            <p className="px-1 text-xs text-slate-500">Per speler: {addMoneySharePerPlayer}</p>
+                          ) : null}
                         </div>
                         <Button
                           onClick={addMoneyToSelectedUsers}
                           disabled={activeFinanceCategory === "vaste_lasten" && !paymentFixedChargeId}
                           className="h-12 w-full rounded-xl"
                         >
-                          <PlusCircle className="mr-2 h-4 w-4" />
-                          {activeFinanceCategory === "saldo" ? "Toevoegen" : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
+                          {activeFinanceCategory === "saldo" && addMoneyForm.direction === "uitgave" ? <MinusCircle className="mr-2 h-4 w-4" /> : <PlusCircle className="mr-2 h-4 w-4" />}
+                          {activeFinanceCategory === "saldo"
+                            ? addMoneyForm.direction === "uitgave" ? "Uitgave verwerken" : "Opwaarderen"
+                            : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
                         </Button>
                         {addMoneyForm.message ? (
                           <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
                         ) : null}
                       </div>
                     </div>
+
+                    {activeFinanceCategory === "saldo" ? (
+                      <div className="rounded-xl bg-white p-4 shadow-sm">
+                        <div className="space-y-1">
+                          <h3 className="text-base font-semibold text-slate-900">Aanpassingen bewerken</h3>
+                          <p className="text-sm text-slate-500">Van nieuw naar oud. Tik op het potlood om de richting, het bedrag of de spelers te wijzigen.</p>
+                        </div>
+                        {!hasSaldoBatchColumns ? (
+                          <div className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                            Bewerken werkt pas nadat scripts/setup-saldo-batches.sql in Supabase is gedraaid.
+                          </div>
+                        ) : null}
+                        {adjustmentMessage ? (
+                          <div className="mt-4 rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{adjustmentMessage}</div>
+                        ) : null}
+                        {saldoAdjustments.length === 0 ? (
+                          <p className="mt-4 text-sm text-slate-500">Nog geen aanpassingen.</p>
+                        ) : (
+                          <div className="mt-4 divide-y divide-slate-100 rounded-xl bg-[#f3f4f6] px-3">
+                            {saldoAdjustments.slice(0, adjustmentLimit).map((adjustment) => {
+                              const isExpense = adjustment.direction === "uitgave";
+                              const names = adjustment.transactions.map((transaction) => users.find((u) => u.id === transaction.user_id)?.name ?? transaction.name);
+                              const playerCount = adjustment.transactions.length;
+                              return (
+                                <div key={adjustment.id} className="flex items-center gap-3 py-2.5">
+                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-slate-700">
+                                    {isExpense ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownLeft className="h-4 w-4" />}
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm font-medium text-slate-900">{summarizeNames(names)}</p>
+                                    <p className="truncate text-xs text-slate-500">
+                                      {isExpense ? "Uitgave" : "Opwaardering"} · {formatDate(adjustment.created_at)}
+                                      {playerCount > 1 ? ` · ${playerCount} spelers · ${adjustment.amountMode === "totaal" ? "totaal" : `${euro(adjustment.perPerson)} p.p.`}` : ""}
+                                    </p>
+                                  </div>
+                                  <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+                                    {isExpense ? "-" : "+"}{euro(adjustment.total)}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => openAdjustmentEditor(adjustment)}
+                                    disabled={!hasSaldoBatchColumns}
+                                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-slate-600 transition hover:bg-slate-200 disabled:opacity-40"
+                                    aria-label="Aanpassing bewerken"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {saldoAdjustments.length > adjustmentLimit ? (
+                          <button
+                            type="button"
+                            onClick={() => setAdjustmentLimit((prev) => prev + adjustmentPageSize)}
+                            className="mt-3 w-full rounded-xl bg-[#f3f4f6] py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                          >
+                            Meer tonen ({saldoAdjustments.length - adjustmentLimit} resterend)
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {activeFinanceCategory === "vaste_lasten" ? (
                       <div className="rounded-xl bg-white p-4 shadow-sm">
@@ -2368,6 +2821,131 @@ export default function SaldoTrackerApp() {
           </>
         )}
       </div>
+
+      {adjustmentEdit ? (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f3f4f6] p-3 pb-8 sm:p-4 md:p-6">
+          <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
+            <div className="relative flex h-10 items-center justify-center">
+              <button
+                type="button"
+                onClick={() => { if (!isSavingAdjustment) setAdjustmentEdit(null); }}
+                className="absolute left-0 flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm transition hover:bg-slate-50"
+                aria-label="Terug"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <h1 className="text-lg font-semibold text-slate-900">Aanpassing bewerken</h1>
+            </div>
+
+            <div className="rounded-xl bg-white px-5 py-4 shadow-sm">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Oorspronkelijk</p>
+              <p className="mt-1 text-sm text-slate-900">
+                {adjustmentEdit.adjustment.direction === "uitgave" ? "Uitgave" : "Opwaardering"} van {euro(adjustmentEdit.adjustment.total)}
+                {" "}bij {adjustmentEdit.adjustment.transactions.length} speler(s) op {formatDateTime(adjustmentEdit.adjustment.created_at)}.
+              </p>
+            </div>
+
+            <div className="rounded-xl bg-white p-4 shadow-sm">
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <SegmentedControl
+                    label="Opwaardering of uitgave"
+                    options={saldoDirectionOptions}
+                    value={adjustmentEdit.direction}
+                    onChange={(direction) => updateAdjustmentEdit({ direction })}
+                  />
+                  <SegmentedControl
+                    label="Totaal bedrag of individueel bedrag"
+                    options={saldoAmountModeOptions}
+                    value={adjustmentEdit.amountMode}
+                    onChange={(amountMode) => updateAdjustmentEdit({ amountMode })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Gebruikers selecteren</Label>
+                    <span className="text-xs text-slate-500">{adjustmentEdit.selectedUserIds.length} geselecteerd</span>
+                  </div>
+                  <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-[#f3f4f6] p-2">
+                    {adjustmentEditUsers.map((user) => {
+                      const selected = adjustmentEdit.selectedUserIds.includes(user.id);
+                      return (
+                        <button
+                          key={user.id} type="button" onClick={() => toggleAdjustmentUser(user.id)}
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${selected ? "bg-slate-900 text-white" : "bg-white hover:bg-slate-50"}`}
+                        >
+                          <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-10 w-10 shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-medium">{user.name}</p>
+                            <p className={`truncate text-sm ${selected ? "text-slate-300" : "text-slate-500"}`}>Huidig saldo: {euro(user.balance)}</p>
+                          </div>
+                          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${selected ? "bg-white text-slate-900" : "border-2 border-slate-300"}`}>
+                            {selected ? <Check className="h-3.5 w-3.5" /> : null}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="adjustment-amount">{adjustmentEdit.amountMode === "totaal" ? "Totaal bedrag" : "Bedrag per speler"}</Label>
+                  <Input
+                    id="adjustment-amount" type="number" step="0.01" min="0" value={adjustmentEdit.amount}
+                    onChange={(e) => updateAdjustmentEdit({ amount: e.target.value })}
+                    onKeyDown={blockMinusKey}
+                    placeholder="Bijv. 10,50" className="h-12 rounded-xl"
+                  />
+                  {adjustmentEditSharePerPlayer && adjustmentEdit.amountMode === "totaal" ? (
+                    <p className="px-1 text-xs text-slate-500">Per speler: {adjustmentEditSharePerPlayer}</p>
+                  ) : null}
+                </div>
+                {adjustmentEdit.message ? (
+                  <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{adjustmentEdit.message}</div>
+                ) : null}
+                <div className="space-y-2">
+                  <Button onClick={saveAdjustment} disabled={isSavingAdjustment} className="h-12 w-full rounded-xl">
+                    {isSavingAdjustment ? "Opslaan..." : "Opslaan"}
+                  </Button>
+                  <Button type="button" variant="outline" disabled={isSavingAdjustment} onClick={() => setAdjustmentEdit(null)} className="h-12 w-full rounded-xl">
+                    Annuleren
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={deleteAdjustment}
+              disabled={isSavingAdjustment}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-white text-sm font-semibold text-red-600 shadow-sm transition hover:bg-red-50 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              Aanpassing verwijderen
+            </button>
+          </motion.div>
+        </div>
+      ) : null}
+
+      {isRoleModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => { if (isSavingRole) return; setIsRoleModalOpen(false); }}>
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="space-y-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">Rol aanpassen</h2>
+                <p className="mt-1 text-sm text-slate-500">Bekijk de app als gebruiker, dev of admin. Je kunt altijd terug.</p>
+              </div>
+              <SegmentedControl label="Rol" options={roleOptions} value={roleDraft} onChange={(role) => { setRoleDraft(role); setRoleMessage(""); }} />
+              {roleMessage ? <p className="text-sm text-slate-600">{roleMessage}</p> : null}
+              <div className="space-y-2 pt-1">
+                <Button type="button" className="w-full rounded-xl" disabled={isSavingRole || roleDraft === currentUser.role} onClick={saveRole}>
+                  {isSavingRole ? "Opslaan..." : "Opslaan"}
+                </Button>
+                <Button type="button" variant="outline" className="w-full rounded-xl" disabled={isSavingRole} onClick={() => setIsRoleModalOpen(false)}>Annuleren</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {isPasswordModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => { if (isSavingPassword) return; setIsPasswordModalOpen(false); }}>
