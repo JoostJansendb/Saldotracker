@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -91,6 +91,14 @@ type FixedCharge = {
   created_at: string;
   name: string;
 };
+
+// Doelpunten van één speler in één seizoen; zie scripts/setup-topscorers.sql.
+type PlayerGoals = {
+  season: string;
+  user_id: string;
+  goals: number;
+};
+type TopScorersView = "dicht" | "open" | "bewerken";
 
 type AvatarCacheMap = Record<string, string>;
 type AppEventType = "login" | "logout" | "session_resume";
@@ -610,6 +618,9 @@ export default function SaldoTrackerApp() {
   const [expandedStatDates, setExpandedStatDates] = useState<string[]>([]);
   const [selectedStatsSeason, setSelectedStatsSeason] = useState<string | null>(null);
   const [activeStatsKpi, setActiveStatsKpi] = useState<StatsKpiKey | null>(null);
+  const [playerGoals, setPlayerGoals] = useState<PlayerGoals[]>([]);
+  const [topScorersView, setTopScorersView] = useState<TopScorersView>("dicht");
+  const [topScorersMessage, setTopScorersMessage] = useState("");
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [addUserForm, setAddUserForm] = useState({ username: "", name: "", password: "" });
   const [addUserMessage, setAddUserMessage] = useState("");
@@ -632,6 +643,8 @@ export default function SaldoTrackerApp() {
   const touchStartYRef = useRef(0);
   const isPullingRef = useRef(false);
   const hasLoggedSessionResumeRef = useRef(false);
+  const goalsFetchIdRef = useRef(0);
+  const pendingGoalUpdatesRef = useRef(0);
 
   const mergeUserWithAvatarCache = (user: User) => ({ ...user, avatar: user.avatar || avatarCacheRef.current[user.id] || "" });
   const getAvatarForUser = (user: Pick<User, "id" | "avatar">) => avatarCache[user.id] || avatarValueToSrc(user.avatar);
@@ -669,6 +682,7 @@ export default function SaldoTrackerApp() {
     setUsers([]);
     setTransactions([]);
     setFixedCharges([]);
+    setPlayerGoals([]);
   };
 
   const syncSessionState = async (
@@ -706,6 +720,16 @@ export default function SaldoTrackerApp() {
     setCurrentUser(userWithAvatar);
     if (data.avatar) updateAvatarCacheForUser(data.id, data.avatar);
     return userWithAvatar;
+  };
+
+  // Tijdens plus/min-klikken laten we elk opgehaald antwoord liggen: dat kan van vóór een klik zijn.
+  // Na de laatste klik halen we opnieuw op, en alleen het nieuwste antwoord telt.
+  const refreshPlayerGoals = async () => {
+    const fetchId = ++goalsFetchIdRef.current;
+    const { data, error: goalsError } = await supabase.from("player_goals").select("season, user_id, goals");
+    if (goalsError) { console.error("Fout bij ophalen doelpunten:", goalsError); return; }
+    if (fetchId !== goalsFetchIdRef.current || pendingGoalUpdatesRef.current > 0) return;
+    setPlayerGoals(data ?? []);
   };
 
   const refreshUsers = async ({ force = false, includeAppEvents }: { force?: boolean; includeAppEvents?: boolean } = {}) => {
@@ -748,6 +772,7 @@ export default function SaldoTrackerApp() {
       } else if (fixedChargeData) {
         setFixedCharges(fixedChargeData);
       }
+      await refreshPlayerGoals();
       const { data: rideScheduleData, error: rideScheduleError } = await supabase
         .from("ride_schedule").select("id, season, match_date, team, location, kilometers, riders").order("match_date", { ascending: true });
       if (rideScheduleError) {
@@ -910,6 +935,7 @@ export default function SaldoTrackerApp() {
       .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "fixed_charges" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "ride_schedule" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "player_goals" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "app_events" }, () => {
         if (isDev(currentUser.role)) scheduleRealtimeRefresh(false);
       })
@@ -1354,6 +1380,33 @@ export default function SaldoTrackerApp() {
         : [];
   const spenderChartMax = Math.max(...spenderChartData.map((item) => item.total), 1);
 
+  // De topscoorders volgen het seizoensfilter; "Aller tijden" telt alle seizoenen bij elkaar op.
+  // Aanpassen gaat per seizoen, dus bij "Aller tijden" kan het niet.
+  const canEditTopScorers = isAdmin(currentUser?.role ?? "user") && activeStatsSeason !== allTimeSeasonValue;
+  const isEditingTopScorers = topScorersView === "bewerken" && canEditTopScorers;
+  const topScorers = useMemo(() => {
+    const goalsPerUser = new Map<string, number>();
+    for (const row of playerGoals) {
+      if (activeStatsSeason !== allTimeSeasonValue && row.season !== activeStatsSeason) continue;
+      goalsPerUser.set(row.user_id, (goalsPerUser.get(row.user_id) ?? 0) + row.goals);
+    }
+    return users
+      .map((user) => ({ userId: user.id, name: user.name, goals: goalsPerUser.get(user.id) ?? 0 }))
+      .filter((scorer) => scorer.goals > 0)
+      .sort((a, b) => b.goals - a.goals || a.name.localeCompare(b.name));
+  }, [activeStatsSeason, playerGoals, users]);
+  // Bij bewerken alle spelers op naam, zodat een rij niet verspringt na een klik;
+  // plus wie dit seizoen al doelpunten heeft maar inmiddels admin is.
+  const topScorerEditRows = useMemo(() => {
+    const goalsPerUser = new Map(
+      playerGoals.filter((row) => row.season === activeStatsSeason).map((row) => [row.user_id, row.goals]),
+    );
+    return users
+      .map((user) => ({ userId: user.id, name: user.name, role: user.role, goals: goalsPerUser.get(user.id) ?? 0 }))
+      .filter((row) => !isAdmin(row.role) || row.goals > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [activeStatsSeason, playerGoals, users]);
+
   const joostUserIds = useMemo(
     () => new Set(users.filter((user) => user.name === "Joost Jansen").map((user) => user.id)),
     [users],
@@ -1712,6 +1765,31 @@ export default function SaldoTrackerApp() {
     } finally {
       setIsSavingFixedCharge(false);
     }
+  };
+
+  // Het getal verspringt meteen; de database telt zelf op (zie adjust_player_goals), zodat snel tikken geen klikken kwijtraakt.
+  const adjustPlayerGoals = async (userId: string, delta: 1 | -1) => {
+    const season = activeStatsSeason;
+    const applyDelta = (change: number) => setPlayerGoals((prev) => {
+      const existing = prev.find((row) => row.season === season && row.user_id === userId);
+      if (!existing) return [...prev, { season, user_id: userId, goals: Math.max(change, 0) }];
+      return prev.map((row) => (row === existing ? { ...row, goals: Math.max(row.goals + change, 0) } : row));
+    });
+    setTopScorersMessage("");
+    applyDelta(delta);
+
+    pendingGoalUpdatesRef.current += 1;
+    try {
+      const { error: rpcError } = await supabase.rpc("adjust_player_goals", { p_season: season, p_user_id: userId, p_delta: delta });
+      if (rpcError) {
+        console.error("Fout bij aanpassen doelpunten:", rpcError);
+        applyDelta(-delta);
+        setTopScorersMessage("Opslaan is mislukt. Het aantal is teruggezet.");
+      }
+    } finally {
+      pendingGoalUpdatesRef.current -= 1;
+    }
+    if (pendingGoalUpdatesRef.current === 0) await refreshPlayerGoals();
   };
 
   // Een post mag alleen weg zolang er geen transacties op staan; de database blokkeert het anders ook.
@@ -2739,6 +2817,75 @@ export default function SaldoTrackerApp() {
                         <option key={season} value={season}>{season}</option>
                       ))}
                     </select>
+                  </div>
+
+                  <div className="rounded-xl bg-white shadow-sm">
+                    <div className="flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => setTopScorersView((prev) => (prev === "dicht" ? "open" : "dicht"))}
+                        aria-expanded={topScorersView !== "dicht"}
+                        className="flex flex-1 items-center gap-2 px-3 py-2.5 text-left"
+                      >
+                        <span className="flex-1 text-sm font-semibold text-slate-900">Topscoorders</span>
+                        <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${topScorersView !== "dicht" ? "rotate-90" : ""}`} />
+                      </button>
+                      {canEditTopScorers ? (
+                        <button
+                          type="button"
+                          onClick={() => { setTopScorersMessage(""); setTopScorersView((prev) => (prev === "bewerken" ? "open" : "bewerken")); }}
+                          className={`mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingTopScorers ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600 hover:bg-slate-200"}`}
+                          aria-label={isEditingTopScorers ? "Klaar met aanpassen" : "Topscoorders aanpassen"}
+                        >
+                          {isEditingTopScorers ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : null}
+                    </div>
+                    {isEditingTopScorers ? (
+                      <div className="border-t border-slate-100 px-3 pb-3 pt-1">
+                        <div className="divide-y divide-slate-100">
+                          {topScorerEditRows.map((row) => (
+                            <div key={row.userId} className="flex items-center gap-3 py-1.5">
+                              <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{row.name}</span>
+                              <button
+                                type="button"
+                                onClick={() => void adjustPlayerGoals(row.userId, -1)}
+                                disabled={row.goals === 0}
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200 disabled:opacity-40"
+                                aria-label={`Doelpunt eraf bij ${row.name}`}
+                              >
+                                <Minus className="h-3.5 w-3.5" />
+                              </button>
+                              <span className="w-6 text-center text-sm font-semibold tabular-nums text-slate-900">{row.goals}</span>
+                              <button
+                                type="button"
+                                onClick={() => void adjustPlayerGoals(row.userId, 1)}
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                                aria-label={`Doelpunt erbij bij ${row.name}`}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        {topScorersMessage ? <p className="mt-2 text-xs text-slate-500">{topScorersMessage}</p> : null}
+                      </div>
+                    ) : topScorersView !== "dicht" ? (
+                      <div className="space-y-1.5 border-t border-slate-100 px-3 pb-2.5 pt-2">
+                        {topScorers.length === 0 ? (
+                          <p className="text-sm text-slate-500">Nog geen doelpunten.</p>
+                        ) : (
+                          topScorers.map((scorer) => (
+                            <div key={scorer.userId} className="flex items-center gap-2 text-sm">
+                              {/* Gelijke aantallen delen een plek: 1, 1, 3. */}
+                              <span className="w-5 shrink-0 tabular-nums text-slate-400">{topScorers.findIndex((s) => s.goals === scorer.goals) + 1}.</span>
+                              <span className="min-w-0 flex-1 truncate text-slate-600">{scorer.name}</span>
+                              <span className="font-medium tabular-nums text-slate-900">{scorer.goals}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
