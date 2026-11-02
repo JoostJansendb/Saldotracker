@@ -1,13 +1,14 @@
 "use client";
 
-import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { supabase } from "@/lib/supabase";
 import { roleSwitcherName, userRoles, type UserRole } from "@/lib/roles";
+import { applyThemePreference, getServerThemePreference, getThemePreference, setThemePreference, subscribeToThemePreference, type ThemePreference } from "@/lib/theme";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy, Moon } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -580,6 +581,12 @@ function canSwitchRole(user: Pick<User, "name">) { return user.name === roleSwit
 
 const roleOptions: Array<{ value: UserRole; label: string }> = userRoles.map((role) => ({ value: role, label: getRoleLabel(role) }));
 
+const themeOptions: Array<{ value: ThemePreference; label: string }> = [
+  { value: "uit", label: "Uit" },
+  { value: "aan", label: "Aan" },
+  { value: "automatisch", label: "Automatisch" },
+];
+
 function getWeekStart(date: Date) {
   const copy = new Date(date);
   copy.setHours(0, 0, 0, 0);
@@ -644,7 +651,7 @@ function SegmentedControl<T extends string>({ options, value, onChange, label }:
   options: Array<{ value: T; label: string }>; value: T; onChange: (value: T) => void; label: string;
 }) {
   return (
-    <div role="group" aria-label={label} className="grid gap-1 rounded-xl bg-[#f3f4f6] p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+    <div role="group" aria-label={label} className="grid gap-1 rounded-xl bg-surface p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
       {options.map((option) => {
         const isActive = option.value === value;
         return (
@@ -684,6 +691,15 @@ function PotProgressBar({ summary, className }: { summary: PotSummary; className
         <div className="absolute -inset-y-1 w-0.5 rounded-full bg-slate-900" style={{ left: `${toPercent(summary.expected)}%` }} />
       ) : null}
     </div>
+  );
+}
+
+// Een vierkant vinkje zoals bij een checkbox, voor lijsten waarin je mensen aan- en uitzet.
+function CheckboxMark({ checked }: { checked: boolean }) {
+  return (
+    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition ${checked ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 bg-white"}`}>
+      {checked ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : null}
+    </span>
   );
 }
 
@@ -742,15 +758,15 @@ const UsageLineChart = React.memo(function UsageLineChart({
         <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Gebruiksstatistieken grafiek">
           {tickValues.map((tick) => {
             const y = paddingTop + graphHeight - (tick / maxValue) * graphHeight;
-            return <text key={tick} x={paddingX - 10} y={y + 7} textAnchor="end" fontSize="18" fill="#0f172a">{tick}</text>;
+            return <text key={tick} x={paddingX - 10} y={y + 7} textAnchor="end" fontSize="18" className="fill-slate-900">{tick}</text>;
           })}
 
-          <path d={areaPath} fill="rgba(60, 71, 89, 0.18)" />
-          <path d={path} fill="none" stroke="#3c4759" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+          <path d={areaPath} className="fill-slate-700/20" />
+          <path d={path} fill="none" className="stroke-slate-700" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
 
           {pointCoordinates.map((point) => (
             <g key={point.key}>
-              <circle cx={point.x} cy={point.y} r="4.5" fill="#3c4759" />
+              <circle cx={point.x} cy={point.y} r="4.5" className="fill-slate-700" />
               <circle cx={point.x} cy={point.y} r="9" fill="transparent">
                 <title>{`${point.label}: ${point.value}`}</title>
               </circle>
@@ -768,7 +784,7 @@ const UsageLineChart = React.memo(function UsageLineChart({
                 y={height - 6}
                 textAnchor={isFirst ? "start" : isLast ? "end" : "middle"}
                 fontSize="17"
-                fill="#0f172a"
+                className="fill-slate-900"
               >
                 {point.label}
               </text>
@@ -845,6 +861,7 @@ export default function SaldoTrackerApp() {
   const [hasPotTables, setHasPotTables] = useState(true);
   const [selectedPotId, setSelectedPotId] = useState<string | null>(null);
   const [potView, setPotView] = useState<PotView>("persoon");
+  const [expandedPotMonths, setExpandedPotMonths] = useState<string[]>([]);
   const [isEditingPot, setIsEditingPot] = useState(false);
   const [potSheetMonth, setPotSheetMonth] = useState<string | null>(null);
   const [potMessage, setPotMessage] = useState("");
@@ -877,6 +894,12 @@ export default function SaldoTrackerApp() {
   const potsFetchIdRef = useRef(0);
   const pendingPotUpdatesRef = useRef(0);
   const potGridRef = useRef<HTMLDivElement | null>(null);
+  const themePreference = useSyncExternalStore(subscribeToThemePreference, getThemePreference, getServerThemePreference);
+
+  // Het themascript in de layout kan zijn gedraaid voordat de theme-color tag in de pagina stond.
+  useEffect(() => {
+    applyThemePreference(getThemePreference());
+  }, []);
 
   const mergeUserWithAvatarCache = (user: User) => ({ ...user, avatar: user.avatar || avatarCacheRef.current[user.id] || "" });
   const getAvatarForUser = (user: Pick<User, "id" | "avatar">) => avatarCache[user.id] || avatarValueToSrc(user.avatar);
@@ -1851,7 +1874,7 @@ export default function SaldoTrackerApp() {
               ))}
             </select>
           </div>
-          <label className="flex items-center gap-3 rounded-xl bg-[#f3f4f6] px-3 py-2.5 text-sm text-slate-700">
+          <label className="flex items-center gap-3 rounded-xl bg-surface px-3 py-2.5 text-sm text-slate-700">
             <input
               type="checkbox"
               checked={excludeJoostEvents}
@@ -1883,7 +1906,7 @@ export default function SaldoTrackerApp() {
         {appEventTableRows.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">Nog geen gebeurtenissen beschikbaar.</p>
         ) : (
-          <div className="mt-3 max-h-72 divide-y divide-slate-100 overflow-y-auto rounded-lg bg-[#f3f4f6] px-3">
+          <div className="mt-3 max-h-72 divide-y divide-slate-100 overflow-y-auto rounded-lg bg-surface px-3">
             {appEventTableRows.map((row) => (
               <div key={row.id} className="flex items-center justify-between gap-3 py-2 text-sm">
                 <span className="truncate font-medium text-slate-900">{row.name}</span>
@@ -2409,6 +2432,7 @@ export default function SaldoTrackerApp() {
   const openPot = (potId: string) => {
     setSelectedPotId(potId);
     setPotView("persoon");
+    setExpandedPotMonths([]);
     setIsEditingPot(false);
     setPotSheetMonth(null);
     setPotMessage("");
@@ -2608,7 +2632,7 @@ export default function SaldoTrackerApp() {
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-[#f3f4f6] flex items-center justify-center">
+      <div className="min-h-screen bg-surface flex items-center justify-center">
         <div className="text-sm text-slate-500">Laden...</div>
       </div>
     );
@@ -2616,7 +2640,7 @@ export default function SaldoTrackerApp() {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-[#f3f4f6] p-4 md:p-8">
+      <div className="min-h-screen bg-surface p-4 md:p-8">
         <div className="mx-auto flex min-h-[85vh] max-w-md items-center justify-center">
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="w-full space-y-4">
             <div className="rounded-xl bg-white px-5 py-8 text-center shadow-sm">
@@ -2648,7 +2672,7 @@ export default function SaldoTrackerApp() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f3f4f6] p-3 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(6rem+env(safe-area-inset-bottom))] md:p-6 md:pb-[calc(6rem+env(safe-area-inset-bottom))]">
+    <div className="min-h-screen bg-surface p-3 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:p-4 sm:pb-[calc(6rem+env(safe-area-inset-bottom))] md:p-6 md:pb-[calc(6rem+env(safe-area-inset-bottom))]">
 
       {isPullRefreshing ? (
         <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-center py-3 bg-white/80 backdrop-blur text-sm text-slate-500">
@@ -2673,7 +2697,7 @@ export default function SaldoTrackerApp() {
 
             <div className="rounded-xl bg-white px-5 py-6 text-center shadow-sm">
               <div className="relative mx-auto h-24 w-24">
-                <UserAvatar name={currentUser.name} avatar={getAvatarForUser(currentUser)} className="h-24 w-24 ring-4 ring-[#f3f4f6]" fallbackClassName="text-2xl" />
+                <UserAvatar name={currentUser.name} avatar={getAvatarForUser(currentUser)} className="h-24 w-24 ring-4 ring-surface" fallbackClassName="text-2xl" />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -2732,7 +2756,7 @@ export default function SaldoTrackerApp() {
                     <button
                       type="button"
                       onClick={startEditingUsername}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-600 transition hover:bg-slate-200"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface text-slate-600 transition hover:bg-slate-200"
                       aria-label="Gebruikersnaam wijzigen"
                     >
                       <Pencil className="h-3.5 w-3.5" />
@@ -2754,13 +2778,27 @@ export default function SaldoTrackerApp() {
               <p className="px-1 text-xs text-slate-400">Je naam kan alleen een admin aanpassen. Met je gebruikersnaam log je in.</p>
             </div>
 
+            <section className="space-y-2">
+              <h2 className="px-1 text-sm font-semibold text-slate-900">Instellingen</h2>
+              <div className="space-y-3 rounded-xl bg-white p-4 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700"><Moon className="h-4 w-4" /></span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-900">Nachtmodus</p>
+                    <p className="text-xs text-slate-500">Automatisch volgt de instelling van je telefoon. Geldt op dit apparaat.</p>
+                  </div>
+                </div>
+                <SegmentedControl label="Nachtmodus" options={themeOptions} value={themePreference} onChange={setThemePreference} />
+              </div>
+            </section>
+
             <div className="divide-y divide-slate-100 rounded-xl bg-white p-2 shadow-sm">
               <button
                 type="button"
                 onClick={() => { setPasswordMessage(""); setCurrentPasswordForChange(""); setNewPassword(""); setConfirmPassword(""); setIsPasswordModalOpen(true); }}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-slate-50"
               >
-                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><KeyRound className="h-4 w-4" /></span>
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-surface text-slate-700"><KeyRound className="h-4 w-4" /></span>
                 <span className="flex-1 text-sm font-medium text-slate-900">Wachtwoord wijzigen</span>
                 <ChevronRight className="h-4 w-4 text-slate-400" />
               </button>
@@ -2770,7 +2808,7 @@ export default function SaldoTrackerApp() {
                   onClick={() => { setAddUserMessage(""); setAddUserForm({ username: "", name: "", password: "" }); setIsAddUserModalOpen(true); }}
                   className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-slate-50"
                 >
-                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><UserPlus className="h-4 w-4" /></span>
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-surface text-slate-700"><UserPlus className="h-4 w-4" /></span>
                   <span className="flex-1 text-sm font-medium text-slate-900">Gebruiker toevoegen</span>
                   <ChevronRight className="h-4 w-4 text-slate-400" />
                 </button>
@@ -2781,7 +2819,7 @@ export default function SaldoTrackerApp() {
                   onClick={openRoleModal}
                   className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-slate-50"
                 >
-                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700"><UserCog className="h-4 w-4" /></span>
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-surface text-slate-700"><UserCog className="h-4 w-4" /></span>
                   <span className="flex-1 text-sm font-medium text-slate-900">Rol aanpassen</span>
                   <span className="text-xs text-slate-500">{getRoleLabel(currentUser.role)}</span>
                   <ChevronRight className="h-4 w-4 text-slate-400" />
@@ -2838,7 +2876,7 @@ export default function SaldoTrackerApp() {
 
                 <div className="relative rounded-xl bg-white px-5 py-8 text-center shadow-sm">
                   {isAdmin(currentUser.role) ? (
-                    <span className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-[#f3f4f6] px-2.5 py-1 text-xs font-medium text-slate-600">
+                    <span className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-surface px-2.5 py-1 text-xs font-medium text-slate-600">
                       <ShieldCheck className="h-3.5 w-3.5" />
                       Admin
                     </span>
@@ -2870,7 +2908,7 @@ export default function SaldoTrackerApp() {
                       const Icon = option.icon;
                       return (
                         <button key={option.value} type="button" onClick={() => setActiveSaldoTab(option.value)} className="flex flex-col items-center gap-2">
-                          <span className={`flex h-12 w-12 items-center justify-center rounded-full transition ${isActive ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-700"}`}>
+                          <span className={`flex h-12 w-12 items-center justify-center rounded-full transition ${isActive ? "bg-slate-900 text-white" : "bg-surface text-slate-700"}`}>
                             <Icon className="h-5 w-5" />
                           </span>
                           <span className={`text-xs font-medium ${isActive ? "text-slate-900" : "text-slate-500"}`}>{option.label}</span>
@@ -2965,7 +3003,7 @@ export default function SaldoTrackerApp() {
                           </div>
                           <div>
                             <Label className="text-xs uppercase tracking-wide text-slate-500">Richting</Label>
-                            <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-[#f3f4f6] p-1">
+                            <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-surface p-1">
                               {transactionDirectionOptions.map((option) => {
                                 const isActive = saldoTransactionDirectionFilter === option.value;
                                 return (
@@ -3007,7 +3045,7 @@ export default function SaldoTrackerApp() {
                       </div>
                     ) : (
                       <div className="rounded-xl bg-white p-4 shadow-sm">
-                        <div className="rounded-xl bg-[#f3f4f6] px-3 pb-1">
+                        <div className="rounded-xl bg-surface px-3 pb-1">
                           {visibleTransactionGroups.map((group) => (
                             <div key={group.key}>
                               <p className="pb-1 pt-3 text-center text-xs font-semibold text-slate-600">{group.label}</p>
@@ -3038,7 +3076,7 @@ export default function SaldoTrackerApp() {
                           <button
                             type="button"
                             onClick={showMoreTransactions}
-                            className="mt-3 w-full rounded-xl bg-[#f3f4f6] py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                            className="mt-3 w-full rounded-xl bg-surface py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
                           >
                             Meer tonen ({filteredTransactions.length - transactionLimit} resterend)
                           </button>
@@ -3109,7 +3147,7 @@ export default function SaldoTrackerApp() {
                             <Label>Gebruikers selecteren</Label>
                             <span className="text-xs text-slate-500">{addMoneyForm.selectedUserIds.length} geselecteerd</span>
                           </div>
-                          <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-[#f3f4f6] p-2">
+                          <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-surface p-2">
                             {visibleUsers.map((user) => {
                               const selected = addMoneyForm.selectedUserIds.includes(user.id);
                               return (
@@ -3155,7 +3193,7 @@ export default function SaldoTrackerApp() {
                             : activeFinanceCategory === "boete" ? "Boete geven" : "Betaling verwerken"}
                         </Button>
                         {addMoneyForm.message ? (
-                          <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
+                          <div className="rounded-xl bg-surface px-4 py-3 text-sm text-slate-700">{addMoneyForm.message}</div>
                         ) : null}
                       </div>
                     </div>
@@ -3172,12 +3210,12 @@ export default function SaldoTrackerApp() {
                           </div>
                         ) : null}
                         {adjustmentMessage ? (
-                          <div className="mt-4 rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{adjustmentMessage}</div>
+                          <div className="mt-4 rounded-xl bg-surface px-4 py-3 text-sm text-slate-700">{adjustmentMessage}</div>
                         ) : null}
                         {saldoAdjustments.length === 0 ? (
                           <p className="mt-4 text-sm text-slate-500">Nog geen aanpassingen.</p>
                         ) : (
-                          <div className="mt-4 divide-y divide-slate-100 rounded-xl bg-[#f3f4f6] px-3">
+                          <div className="mt-4 divide-y divide-slate-100 rounded-xl bg-surface px-3">
                             {saldoAdjustments.slice(0, adjustmentLimit).map((adjustment) => {
                               const isExpense = adjustment.direction === "uitgave";
                               const names = adjustment.transactions.map((transaction) => users.find((u) => u.id === transaction.user_id)?.name ?? transaction.name);
@@ -3215,7 +3253,7 @@ export default function SaldoTrackerApp() {
                           <button
                             type="button"
                             onClick={() => setAdjustmentLimit((prev) => prev + adjustmentPageSize)}
-                            className="mt-3 w-full rounded-xl bg-[#f3f4f6] py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                            className="mt-3 w-full rounded-xl bg-surface py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
                           >
                             Meer tonen ({saldoAdjustments.length - adjustmentLimit} resterend)
                           </button>
@@ -3244,7 +3282,7 @@ export default function SaldoTrackerApp() {
                           </Button>
                         </div>
                         {potPaymentForm.message ? (
-                          <div className="mt-3 rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{potPaymentForm.message}</div>
+                          <div className="mt-3 rounded-xl bg-surface px-4 py-3 text-sm text-slate-700">{potPaymentForm.message}</div>
                         ) : null}
                       </div>
                     ) : null}
@@ -3304,7 +3342,7 @@ export default function SaldoTrackerApp() {
                               key={match.id}
                               className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "my-1 rounded-lg bg-slate-900/5 px-2" : "px-1"}`}
                             >
-                              <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600"}`}>
+                              <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-surface text-slate-600"}`}>
                                 <div className="text-[13px] font-semibold leading-none">{day}</div>
                                 <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
                               </div>
@@ -3352,7 +3390,7 @@ export default function SaldoTrackerApp() {
                               key={`${duty.season}-${duty.month}`}
                               className={`flex items-center gap-2.5 py-2 ${isUserOnDuty ? "my-1 rounded-lg bg-slate-900/5 px-2" : "px-1"}`}
                             >
-                              <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isCurrentMonth ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600"}`}>
+                              <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isCurrentMonth ? "bg-slate-900 text-white" : "bg-surface text-slate-600"}`}>
                                 <div className="text-[13px] font-semibold leading-none">{shortMonths[duty.month - 1] ?? ""}</div>
                                 <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{getMaterialDutyYear(duty.season, duty.month).slice(-2)}</div>
                               </div>
@@ -3419,7 +3457,7 @@ export default function SaldoTrackerApp() {
                         </div>
                       </div>
                       {selectedPot.archived_at ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-[#f3f4f6] px-2.5 py-1 text-xs font-medium text-slate-600">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-surface px-2.5 py-1 text-xs font-medium text-slate-600">
                           <Archive className="h-3.5 w-3.5" />
                           Gearchiveerd
                         </span>
@@ -3445,7 +3483,7 @@ export default function SaldoTrackerApp() {
                       </div>
                       <div className="grid grid-cols-3 gap-2">
                         {selectedPotTiles.map((tile) => (
-                          <div key={tile.label} className="rounded-xl bg-[#f3f4f6] px-3 py-2.5">
+                          <div key={tile.label} className="rounded-xl bg-surface px-3 py-2.5">
                             <p className="truncate text-xs text-slate-500">{tile.label}</p>
                             <p className="mt-0.5 truncate text-lg font-bold tracking-tight text-slate-900">{tile.value}</p>
                           </div>
@@ -3485,7 +3523,7 @@ export default function SaldoTrackerApp() {
                             <button
                               type="button"
                               onClick={() => { setPotMessage(""); setPotSheetMonth(null); setIsEditingPot((prev) => !prev); }}
-                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingPot ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600 hover:bg-slate-200"}`}
+                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingPot ? "bg-slate-900 text-white" : "bg-surface text-slate-600 hover:bg-slate-200"}`}
                               aria-label={isEditingPot ? "Klaar met afvinken" : "Betalingen afvinken"}
                             >
                               {isEditingPot ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
@@ -3493,7 +3531,7 @@ export default function SaldoTrackerApp() {
                           ) : null}
                         </div>
                         {potMessage ? (
-                          <div className="mx-4 mt-3 rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{potMessage}</div>
+                          <div className="mx-4 mt-3 rounded-xl bg-surface px-4 py-3 text-sm text-slate-700">{potMessage}</div>
                         ) : null}
                         {selectedPotRows.length === 0 ? (
                           <p className="px-4 pt-3 text-sm text-slate-500">Nog geen deelnemers.</p>
@@ -3511,7 +3549,7 @@ export default function SaldoTrackerApp() {
                                       key={month}
                                       type="button"
                                       onClick={() => setPotSheetMonth(month)}
-                                      className={`h-7 w-6 shrink-0 rounded-md bg-[#f3f4f6] transition hover:bg-slate-200 ${labelClassName}`}
+                                      className={`h-7 w-6 shrink-0 rounded-md bg-surface transition hover:bg-slate-200 ${labelClassName}`}
                                       aria-label={`Afvinklijst voor ${formatMonthLong(month)} ${month.slice(0, 4)}`}
                                     >
                                       {formatMonthShort(month)}
@@ -3591,8 +3629,11 @@ export default function SaldoTrackerApp() {
                           const isFuture = toMonthNumber(total.month) > toMonthNumber(currentMonthKey);
                           const isComplete = total.eligible > 0 && total.paid === total.eligible;
                           const openRows = selectedPotRows.filter((row) => row.statuses[index] === "open" || row.statuses[index] === "niet_betaald");
-                          return (
-                            <div key={total.month} className="space-y-2 px-4 py-3">
+                          // Een maand waarin nog mensen open staan klapt open: dan staan alle namen eronder.
+                          const canExpand = !isFuture && openRows.length > 0;
+                          const isExpanded = canExpand && expandedPotMonths.includes(total.month);
+                          const monthSummary = (
+                            <>
                               <div className="flex items-center justify-between gap-3">
                                 <div className="flex min-w-0 items-center gap-2">
                                   <span className={`truncate text-sm font-semibold ${isFuture ? "text-slate-500" : "text-slate-900"}`}>
@@ -3615,14 +3656,45 @@ export default function SaldoTrackerApp() {
                                   style={{ width: `${total.eligible > 0 ? (total.paid / total.eligible) * 100 : 0}%` }}
                                 />
                               </div>
-                              {!isFuture && openRows.length > 0 ? (
+                              {canExpand ? (
                                 <div className="flex items-center gap-2">
                                   <div className="flex shrink-0 -space-x-1.5">
                                     {openRows.slice(0, 5).map((row) => (
                                       <UserAvatar key={row.userId} name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-6 w-6 ring-2 ring-white" fallbackClassName="text-[10px]" />
                                     ))}
                                   </div>
-                                  <p className="min-w-0 truncate text-xs text-slate-500">Nog open: {summarizeNames(openRows.map((row) => row.shortName))}</p>
+                                  <p className="min-w-0 flex-1 truncate text-xs text-slate-500">Nog open: {summarizeNames(openRows.map((row) => row.shortName))}</p>
+                                  <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                </div>
+                              ) : null}
+                            </>
+                          );
+                          return (
+                            <div key={total.month} className="px-4 py-3">
+                              {canExpand ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedPotMonths((prev) => (prev.includes(total.month) ? prev.filter((month) => month !== total.month) : [...prev, total.month]))}
+                                  aria-expanded={isExpanded}
+                                  className="block w-full space-y-2 text-left"
+                                >
+                                  {monthSummary}
+                                </button>
+                              ) : (
+                                <div className="space-y-2">{monthSummary}</div>
+                              )}
+                              {isExpanded ? (
+                                <div className="mt-3 space-y-1 rounded-xl bg-surface p-1.5">
+                                  {openRows.map((row) => {
+                                    const status = row.statuses[index];
+                                    return (
+                                      <div key={row.userId} className="flex items-center gap-3 rounded-lg bg-white px-3 py-2">
+                                        <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-8 w-8 shrink-0" />
+                                        <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{row.name}{row.isCurrentUser ? " (jij)" : ""}</p>
+                                        <span className={`shrink-0 text-xs font-medium ${status === "open" ? "text-amber-700" : "text-slate-500"}`}>{potCellLabels[status]}</span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               ) : null}
                             </div>
@@ -3728,7 +3800,7 @@ export default function SaldoTrackerApp() {
                         <div className="divide-y divide-slate-100 rounded-xl bg-white px-2 shadow-sm">
                           {archivedPots.map((pot) => (
                             <button key={pot.id} type="button" onClick={() => openPot(pot.id)} className="flex w-full items-center gap-3 px-2 py-3 text-left">
-                              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700">
+                              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700">
                                 <Archive className="h-4 w-4" />
                               </span>
                               <div className="min-w-0 flex-1">
@@ -3779,7 +3851,7 @@ export default function SaldoTrackerApp() {
                         <button
                           type="button"
                           onClick={() => { setTopScorersMessage(""); setTopScorersView((prev) => (prev === "bewerken" ? "open" : "bewerken")); }}
-                          className={`mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingTopScorers ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600 hover:bg-slate-200"}`}
+                          className={`mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingTopScorers ? "bg-slate-900 text-white" : "bg-surface text-slate-600 hover:bg-slate-200"}`}
                           aria-label={isEditingTopScorers ? "Klaar met aanpassen" : "Topscoorders aanpassen"}
                         >
                           {isEditingTopScorers ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
@@ -3796,7 +3868,7 @@ export default function SaldoTrackerApp() {
                                 type="button"
                                 onClick={() => void adjustPlayerGoals(row.userId, -1)}
                                 disabled={row.goals === 0}
-                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200 disabled:opacity-40"
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200 disabled:opacity-40"
                                 aria-label={`Doelpunt eraf bij ${row.name}`}
                               >
                                 <Minus className="h-3.5 w-3.5" />
@@ -3805,7 +3877,7 @@ export default function SaldoTrackerApp() {
                               <button
                                 type="button"
                                 onClick={() => void adjustPlayerGoals(row.userId, 1)}
-                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200"
                                 aria-label={`Doelpunt erbij bij ${row.name}`}
                               >
                                 <Plus className="h-3.5 w-3.5" />
@@ -3841,7 +3913,7 @@ export default function SaldoTrackerApp() {
                         onClick={() => setActiveStatsKpi(kpi.key)}
                         className="relative rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.98]"
                       >
-                        <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-500">
+                        <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500">
                           <ArrowUpRight className="h-3.5 w-3.5" />
                         </span>
                         <p className="pr-8 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
@@ -3870,7 +3942,7 @@ export default function SaldoTrackerApp() {
                               >
                                 {spender.username}
                               </button>
-                              <div className="h-2.5 min-w-0 overflow-hidden rounded-full bg-[#f3f4f6]">
+                              <div className="h-2.5 min-w-0 overflow-hidden rounded-full bg-surface">
                                 <motion.div
                                   initial={{ width: 0 }}
                                   animate={{ width: `${widthPercent}%` }}
@@ -3895,7 +3967,7 @@ export default function SaldoTrackerApp() {
                         {statistics.monthlyTotals.map((item) => {
                           const isExpanded = expandedStatMonths.includes(item.key);
                           return (
-                            <div key={item.key} className="rounded-lg bg-[#f3f4f6]">
+                            <div key={item.key} className="rounded-lg bg-surface">
                               <button
                                 type="button"
                                 onClick={() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
@@ -3931,7 +4003,7 @@ export default function SaldoTrackerApp() {
                         {statistics.dailyExpenses.map((item) => {
                           const isExpanded = expandedStatDates.includes(item.key);
                           return (
-                            <div key={item.key} className="rounded-lg bg-[#f3f4f6]">
+                            <div key={item.key} className="rounded-lg bg-surface">
                               <button
                                 type="button"
                                 onClick={() => setExpandedStatDates((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
@@ -3966,7 +4038,7 @@ export default function SaldoTrackerApp() {
       </div>
 
       {adjustmentEdit ? (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f3f4f6] p-3 pb-8 sm:p-4 md:p-6">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-surface p-3 pb-8 sm:p-4 md:p-6">
           <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
             <div className="relative flex h-10 items-center justify-center">
               <button
@@ -4009,7 +4081,7 @@ export default function SaldoTrackerApp() {
                     <Label>Gebruikers selecteren</Label>
                     <span className="text-xs text-slate-500">{adjustmentEdit.selectedUserIds.length} geselecteerd</span>
                   </div>
-                  <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-[#f3f4f6] p-2">
+                  <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-surface p-2">
                     {adjustmentEditUsers.map((user) => {
                       const selected = adjustmentEdit.selectedUserIds.includes(user.id);
                       return (
@@ -4043,7 +4115,7 @@ export default function SaldoTrackerApp() {
                   ) : null}
                 </div>
                 {adjustmentEdit.message ? (
-                  <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{adjustmentEdit.message}</div>
+                  <div className="rounded-xl bg-surface px-4 py-3 text-sm text-slate-700">{adjustmentEdit.message}</div>
                 ) : null}
                 <div className="space-y-2">
                   <Button onClick={saveAdjustment} disabled={isSavingAdjustment} className="h-12 w-full rounded-xl">
@@ -4123,7 +4195,7 @@ export default function SaldoTrackerApp() {
       ) : null}
 
       {isFixedChargeModalOpen ? (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f3f4f6] p-3 pb-8 sm:p-4 md:p-6">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-surface p-3 pb-8 sm:p-4 md:p-6">
           <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
             <div className="relative flex h-10 items-center justify-center">
               <button
@@ -4156,7 +4228,7 @@ export default function SaldoTrackerApp() {
                   {isSavingFixedCharge ? "Aanmaken..." : "Aanmaken"}
                 </Button>
                 {fixedChargeForm.message ? (
-                  <div className="rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
+                  <div className="rounded-xl bg-surface px-4 py-3 text-sm text-slate-700">{fixedChargeForm.message}</div>
                 ) : null}
               </div>
             </div>
@@ -4176,7 +4248,7 @@ export default function SaldoTrackerApp() {
                   return (
                     <div key={charge.id} className="rounded-xl bg-white p-4 shadow-sm">
                       <div className="flex items-start gap-3">
-                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700">
                           <Receipt className="h-4 w-4" />
                         </span>
                         <div className="min-w-0 flex-1">
@@ -4208,7 +4280,7 @@ export default function SaldoTrackerApp() {
       ) : null}
 
       {potForm ? (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f3f4f6] p-3 pb-8 sm:p-4 md:p-6">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-surface p-3 pb-8 sm:p-4 md:p-6">
           <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
             <div className="relative flex h-10 items-center justify-center">
               <button
@@ -4328,14 +4400,14 @@ export default function SaldoTrackerApp() {
                     onClick={toggleAllPotFormUsers}
                     disabled={visiblePotFormUsers.length === 0}
                     aria-pressed={areAllVisiblePotFormUsersSelected}
-                    className="flex items-center gap-3 py-1 text-sm font-medium text-slate-900 disabled:opacity-40"
+                    className="flex min-h-11 items-center gap-3 text-sm font-semibold text-slate-900 disabled:opacity-40"
                   >
-                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${areAllVisiblePotFormUsersSelected ? "bg-slate-900 text-white" : "border-2 border-slate-300"}`}>
-                      {areAllVisiblePotFormUsersSelected ? <Check className="h-3.5 w-3.5" /> : null}
-                    </span>
+                    <CheckboxMark checked={areAllVisiblePotFormUsersSelected} />
                     Selecteer alles
                   </button>
-                  <span className="text-xs text-slate-500">{potForm.selectedUserIds.length} geselecteerd</span>
+                  <span className="rounded-full bg-surface px-2.5 py-1 text-xs font-semibold text-slate-700">
+                    {potForm.selectedUserIds.length} van {potFormUsers.length} gekozen
+                  </span>
                 </div>
                 {potToCopyParticipantsFrom ? (
                   <button
@@ -4347,22 +4419,22 @@ export default function SaldoTrackerApp() {
                     <span className="truncate">Zelfde deelnemers als {potToCopyParticipantsFrom.name}</span>
                   </button>
                 ) : null}
-                <div className="max-h-96 space-y-2 overflow-y-auto rounded-xl bg-[#f3f4f6] p-2">
+                <div className="divide-y divide-slate-100 border-y border-slate-100">
                   {visiblePotFormUsers.length === 0 ? (
-                    <p className="px-2 py-3 text-sm text-slate-500">Niemand gevonden met die naam.</p>
+                    <p className="px-1 py-4 text-sm text-slate-500">Niemand gevonden met die naam.</p>
                   ) : (
                     visiblePotFormUsers.map((user) => {
                       const selected = potForm.selectedUserIds.includes(user.id);
                       return (
                         <button
-                          key={user.id} type="button" onClick={() => togglePotFormUser(user.id)}
-                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${selected ? "bg-slate-900 text-white" : "bg-white hover:bg-slate-50"}`}
+                          key={user.id} type="button" onClick={() => togglePotFormUser(user.id)} aria-pressed={selected}
+                          className="flex min-h-[52px] w-full items-center gap-3 px-1 text-left transition hover:bg-slate-50"
                         >
-                          <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-10 w-10 shrink-0" />
-                          <p className="min-w-0 flex-1 truncate font-medium">{user.name}</p>
-                          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${selected ? "bg-white text-slate-900" : "border-2 border-slate-300"}`}>
-                            {selected ? <Check className="h-3.5 w-3.5" /> : null}
-                          </span>
+                          <CheckboxMark checked={selected} />
+                          <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-8 w-8 shrink-0" />
+                          <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">
+                            {user.name}{user.id === currentUser?.id ? " (jij)" : ""}
+                          </p>
                         </button>
                       );
                     })
@@ -4445,7 +4517,7 @@ export default function SaldoTrackerApp() {
               <button
                 type="button"
                 onClick={() => setPotSheetMonth(null)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200"
                 aria-label="Sluiten"
               >
                 <X className="h-4 w-4" />
@@ -4458,7 +4530,7 @@ export default function SaldoTrackerApp() {
                 void markPotPayments(selectedPot.id, potSheetMonth, everyonePaid ? potSheetRows.map((row) => row.userId) : potSheetUnpaidIds, !everyonePaid);
               }}
               aria-pressed={potSheetUnpaidIds.length === 0}
-              className="mt-4 flex w-full items-center gap-3 rounded-xl bg-[#f3f4f6] px-3 py-3 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-200"
+              className="mt-4 flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-200"
             >
               <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${potSheetUnpaidIds.length === 0 ? "bg-emerald-600 text-white" : "border-2 border-slate-300 bg-white"}`}>
                 {potSheetUnpaidIds.length === 0 ? <Check className="h-3.5 w-3.5" /> : null}
@@ -4532,30 +4604,30 @@ export default function SaldoTrackerApp() {
             className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl"
           >
             <div className="flex items-start justify-between">
-              <span className="rounded-full bg-[#f3f4f6] px-2.5 py-1 text-xs font-medium text-slate-600">{getRoleLabel(selectedUser.role)}</span>
+              <span className="rounded-full bg-surface px-2.5 py-1 text-xs font-medium text-slate-600">{getRoleLabel(selectedUser.role)}</span>
               <button
                 type="button"
                 onClick={() => setSelectedUser(null)}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200"
                 aria-label="Sluiten"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
             <div className="mt-1 text-center">
-              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-48 w-48 ring-4 ring-[#f3f4f6]" fallbackClassName="text-4xl" />
+              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-48 w-48 ring-4 ring-surface" fallbackClassName="text-4xl" />
               <p className="mt-3 text-lg font-semibold text-slate-900">{selectedUser.name}</p>
               <p className="text-sm text-slate-500">@{selectedUser.username}</p>
             </div>
             <div className={`mt-5 grid gap-3 ${selectedUserCategory === "saldo" ? "grid-cols-2" : "grid-cols-1"}`}>
-              <div className="rounded-xl bg-[#f3f4f6] p-4">
+              <div className="rounded-xl bg-surface p-4">
                 <p className="text-xs text-slate-500">{selectedUserCategory === "saldo" ? "Huidig saldo" : selectedUserCategory === "boete" ? "Boetes" : "Betaald voor deze post"}</p>
                 <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   {euro(selectedUser.balance)}
                 </p>
               </div>
               {selectedUserCategory === "saldo" ? (
-                <div className="rounded-xl bg-[#f3f4f6] p-4">
+                <div className="rounded-xl bg-surface p-4">
                   <p className="text-xs text-slate-500">Totaal uitgegeven</p>
                   <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">{euro(allTimePositivePerUser.get(selectedUser.id) ?? 0)}</p>
                 </div>
@@ -4603,7 +4675,7 @@ export default function SaldoTrackerApp() {
               <button
                 type="button"
                 onClick={() => setActiveStatsKpi(null)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200"
                 aria-label="Sluiten"
               >
                 <X className="h-4 w-4" />
@@ -4626,7 +4698,7 @@ export default function SaldoTrackerApp() {
                             initial={{ height: 0 }}
                             animate={{ height: `${Math.max(heightPercent, 3)}%` }}
                             transition={{ duration: 0.45, delay: index * 0.04 }}
-                            className={`w-full rounded-md ${isAverageBucket ? "bg-slate-900" : "bg-[#f3f4f6]"}`}
+                            className={`w-full rounded-md ${isAverageBucket ? "bg-slate-900" : "bg-surface"}`}
                           />
                         </div>
                       );
@@ -4659,7 +4731,7 @@ export default function SaldoTrackerApp() {
                       key={row.userId}
                       type="button"
                       onClick={() => openUserPopupFromStats(row.userId)}
-                      className="flex w-full items-center gap-3 rounded-lg bg-[#f3f4f6] px-3 py-2.5 text-left transition hover:bg-slate-200"
+                      className="flex w-full items-center gap-3 rounded-lg bg-surface px-3 py-2.5 text-left transition hover:bg-slate-200"
                     >
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-600">{index + 1}</span>
                       <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-9 w-9 shrink-0" />
@@ -4678,7 +4750,7 @@ export default function SaldoTrackerApp() {
 
       {isProfilePageOpen ? null : (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-        <div className="mx-auto grid w-full max-w-md grid-cols-4 py-3">
+        <div className="mx-auto grid w-full max-w-sm grid-cols-4 px-6 py-3">
           <button onClick={() => setActiveMainTab("saldo")} className="flex w-full flex-col items-center justify-center">
             <Wallet className={`transition ${activeMainTab === "saldo" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "saldo" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Saldo</span>

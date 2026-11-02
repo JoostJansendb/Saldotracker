@@ -2,6 +2,7 @@ import type { Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Inter } from "next/font/google";
+import { themeInitScript } from "@/lib/theme";
 
 import { Manrope } from "next/font/google";
 
@@ -39,10 +40,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // suppressHydrationWarning: het themascript zet de class "dark" al op <html> voordat React hydrateert.
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body className={`${manrope.className} min-h-full flex flex-col antialiased`}>
         {children}
       </body>

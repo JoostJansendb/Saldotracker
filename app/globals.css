@@ -5,6 +5,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --color-surface: var(--surface);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
@@ -49,6 +50,9 @@
 }
 
 :root {
+  color-scheme: light;
+  /* De lichtgrijze ondergrond van de app, ook achter de kaarten in de kaarten. */
+  --surface: #f3f4f6;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -83,15 +87,94 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/*
+ * Nachtmodus. De app gebruikt vooral slate, white en de surface-ondergrond, dus die krijgen hier
+ * donkere waarden: kaarten (white) worden donkergrijs, tekst (slate-900) wordt licht, en een donkere
+ * knop (bg-slate-900 text-white) wordt vanzelf een lichte knop met donkere tekst.
+ * De accentkleuren draaien hun schaal om: een lichte tint (amber-50) wordt een donkere tint en
+ * donkere tekst (amber-800) wordt licht. Het midden van de schaal (500) blijft gelijk.
+ * Moet --surface veranderen, pas dan ook themeColors in lib/theme.ts aan.
+ */
 .dark {
-  --background: oklch(0.145 0 0);
+  color-scheme: dark;
+  --surface: #0e1219;
+  --color-white: #171c25;
+
+  --color-slate-50: oklch(0.25 0.014 262);
+  --color-slate-100: oklch(0.275 0.015 262);
+  --color-slate-200: oklch(0.32 0.017 262);
+  --color-slate-300: oklch(0.42 0.02 260);
+  --color-slate-400: oklch(0.58 0.025 258);
+  --color-slate-500: oklch(0.68 0.025 257);
+  --color-slate-600: oklch(0.76 0.02 256);
+  --color-slate-700: oklch(0.84 0.015 255);
+  --color-slate-800: oklch(0.9 0.01 254);
+  --color-slate-900: oklch(0.955 0.006 250);
+  --color-slate-950: oklch(0.985 0.003 248);
+
+  --color-emerald-50: oklch(26.2% 0.051 172.552);
+  --color-emerald-100: oklch(37.8% 0.077 168.94);
+  --color-emerald-200: oklch(43.2% 0.095 166.913);
+  --color-emerald-300: oklch(50.8% 0.118 165.612);
+  --color-emerald-400: oklch(59.6% 0.145 163.225);
+  --color-emerald-600: oklch(76.5% 0.177 163.223);
+  --color-emerald-700: oklch(84.5% 0.143 164.978);
+  --color-emerald-800: oklch(90.5% 0.093 164.15);
+  --color-emerald-900: oklch(95% 0.052 163.051);
+  --color-emerald-950: oklch(97.9% 0.021 166.113);
+
+  --color-amber-50: oklch(27.9% 0.077 45.635);
+  --color-amber-100: oklch(41.4% 0.112 45.904);
+  --color-amber-200: oklch(47.3% 0.137 46.201);
+  --color-amber-300: oklch(55.5% 0.163 48.998);
+  --color-amber-400: oklch(66.6% 0.179 58.318);
+  --color-amber-600: oklch(82.8% 0.189 84.429);
+  --color-amber-700: oklch(87.9% 0.169 91.605);
+  --color-amber-800: oklch(92.4% 0.12 95.746);
+  --color-amber-900: oklch(96.2% 0.059 95.617);
+  --color-amber-950: oklch(98.7% 0.022 95.277);
+
+  --color-red-50: oklch(25.8% 0.092 26.042);
+  --color-red-100: oklch(39.6% 0.141 25.723);
+  --color-red-200: oklch(44.4% 0.177 26.899);
+  --color-red-300: oklch(50.5% 0.213 27.518);
+  --color-red-400: oklch(57.7% 0.245 27.325);
+  --color-red-600: oklch(70.4% 0.191 22.216);
+  --color-red-700: oklch(80.8% 0.114 19.571);
+  --color-red-800: oklch(88.5% 0.062 18.334);
+  --color-red-900: oklch(93.6% 0.032 17.717);
+  --color-red-950: oklch(97.1% 0.013 17.38);
+
+  --color-blue-50: oklch(28.2% 0.091 267.935);
+  --color-blue-100: oklch(37.9% 0.146 265.522);
+  --color-blue-200: oklch(42.4% 0.199 265.638);
+  --color-blue-300: oklch(48.8% 0.243 264.376);
+  --color-blue-400: oklch(54.6% 0.245 262.881);
+  --color-blue-600: oklch(70.7% 0.165 254.624);
+  --color-blue-700: oklch(80.9% 0.105 251.813);
+  --color-blue-800: oklch(88.2% 0.059 254.128);
+  --color-blue-900: oklch(93.2% 0.032 255.585);
+  --color-blue-950: oklch(97% 0.014 254.604);
+
+  --color-violet-50: oklch(28.3% 0.141 291.089);
+  --color-violet-100: oklch(38% 0.189 293.745);
+  --color-violet-200: oklch(43.2% 0.232 292.759);
+  --color-violet-300: oklch(49.1% 0.27 292.581);
+  --color-violet-400: oklch(54.1% 0.281 293.009);
+  --color-violet-600: oklch(70.2% 0.183 293.541);
+  --color-violet-700: oklch(81.1% 0.111 293.571);
+  --color-violet-800: oklch(89.4% 0.057 293.283);
+  --color-violet-900: oklch(94.3% 0.029 294.588);
+  --color-violet-950: oklch(96.9% 0.016 293.756);
+
+  --background: #171c25;
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: oklch(0.955 0.006 250);
+  --primary-foreground: #171c25;
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -124,10 +207,10 @@
   body {
     @apply bg-background text-foreground;
   }
-  /* De app staat op een lichtgrijze ondergrond; zo krijgt ook de statusbalk op iOS die kleur. */
+  /* De app staat op een lichtgrijze ondergrond (donker in nachtmodus); zo krijgt ook de statusbalk op iOS die kleur. */
   html,
   body {
-    background-color: #f3f4f6;
+    background-color: var(--surface);
   }
   html {
     @apply font-sans;
