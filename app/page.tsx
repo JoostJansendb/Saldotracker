@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -99,6 +99,45 @@ type PlayerGoals = {
   goals: number;
 };
 type TopScorersView = "dicht" | "open" | "bewerken";
+
+// Een potje: per maand een vast bedrag per deelnemer, los van saldo; zie scripts/setup-potjes.sql.
+// Maanden zijn "YYYY-MM-01", zoals Supabase een date kolom levert.
+type PotIcon = "tent" | "utensils" | "plane" | "trophy";
+type Pot = {
+  id: string;
+  created_at: string;
+  name: string;
+  icon: PotIcon;
+  monthly_amount: number;
+  start_month: string;
+  end_month: string;
+  archived_at: string | null;
+};
+type PotParticipant = {
+  pot_id: string;
+  user_id: string;
+  // Leeg = doet mee vanaf de eerste maand van het potje.
+  start_month: string | null;
+};
+type PotPayment = {
+  pot_id: string;
+  user_id: string;
+  month: string;
+};
+type PotCellStatus = "betaald" | "open" | "niet_betaald" | "komt_nog" | "doet_niet_mee";
+type PotView = "persoon" | "maand";
+type PotFormState = {
+  potId: string | null;
+  step: 1 | 2;
+  name: string;
+  icon: PotIcon;
+  amount: string;
+  startMonth: string;
+  endMonth: string;
+  selectedUserIds: string[];
+  query: string;
+  message: string;
+};
 
 type AvatarCacheMap = Record<string, string>;
 type AppEventType = "login" | "logout" | "session_resume";
@@ -334,6 +373,154 @@ function getMaterialDutyMonthOrder(month: number) {
   return (month - seasonStartMonth - 1 + 12) % 12;
 }
 
+const longMonths = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september", "oktober", "november", "december"];
+
+// Een maand als één getal (jaar * 12 + maand), zodat optellen en vergelijken simpel blijft.
+function toMonthNumber(monthKey: string) {
+  const [year, month] = monthKey.split("-");
+  return Number(year) * 12 + Number(month) - 1;
+}
+
+function toMonthKey(monthNumber: number) {
+  return `${Math.floor(monthNumber / 12)}-${String((monthNumber % 12) + 1).padStart(2, "0")}-01`;
+}
+
+function getCurrentMonthKey() {
+  const now = new Date();
+  return toMonthKey(now.getFullYear() * 12 + now.getMonth());
+}
+
+function getMonthKeysBetween(startMonthKey: string, endMonthKey: string) {
+  const start = toMonthNumber(startMonthKey);
+  const count = Math.max(0, toMonthNumber(endMonthKey) - start + 1);
+  return Array.from({ length: count }, (_, index) => toMonthKey(start + index));
+}
+
+function formatMonthShort(monthKey: string) {
+  return shortMonths[Number(monthKey.split("-")[1]) - 1] ?? "";
+}
+
+function formatMonthLong(monthKey: string) {
+  return longMonths[Number(monthKey.split("-")[1]) - 1] ?? "";
+}
+
+function formatMonthWithYear(monthKey: string) {
+  return `${formatMonthShort(monthKey)} ${monthKey.split("-")[0]}`;
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+// Ronde bedragen zonder ",00": "€ 620 van € 2.380" leest rustiger op de potjes.
+function euroCompact(amount: number) {
+  if (!Number.isInteger(amount)) return euro(amount);
+  return new Intl.NumberFormat("nl-NL", { style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
+}
+
+function getPotPaymentKey(potId: string, userId: string, month: string) {
+  return `${potId}|${userId}|${month}`;
+}
+
+// Per deelnemer de status van elke maand, plus de bedragen voor de voortgangsbalk.
+// In centen gerekend, zodat bijvoorbeeld 12 × € 12,50 precies klopt.
+function summarizePot(pot: Pot, participants: PotParticipant[], paidKeys: Set<string>, currentMonthKey: string) {
+  const months = getMonthKeysBetween(pot.start_month, pot.end_month);
+  const amountCents = Math.round(pot.monthly_amount * 100);
+  const currentMonth = toMonthNumber(currentMonthKey);
+  let targetCents = 0;
+  let collectedCents = 0;
+  let expectedCents = 0;
+  const statusesByUser = new Map<string, PotCellStatus[]>();
+  for (const participant of participants) {
+    const firstMonth = toMonthNumber(participant.start_month ?? pot.start_month);
+    statusesByUser.set(participant.user_id, months.map((month): PotCellStatus => {
+      const monthNumber = toMonthNumber(month);
+      if (monthNumber < firstMonth) return "doet_niet_mee";
+      targetCents += amountCents;
+      if (monthNumber <= currentMonth) expectedCents += amountCents;
+      if (paidKeys.has(getPotPaymentKey(pot.id, participant.user_id, month))) {
+        collectedCents += amountCents;
+        return "betaald";
+      }
+      if (monthNumber < currentMonth) return "niet_betaald";
+      return monthNumber === currentMonth ? "open" : "komt_nog";
+    }));
+  }
+  const monthTotals = months.map((month, index) => {
+    let paid = 0;
+    let eligible = 0;
+    for (const statuses of statusesByUser.values()) {
+      if (statuses[index] === "doet_niet_mee") continue;
+      eligible += 1;
+      if (statuses[index] === "betaald") paid += 1;
+    }
+    return { month, paid, eligible };
+  });
+  return {
+    months,
+    statusesByUser,
+    monthTotals,
+    currentIndex: months.indexOf(currentMonthKey),
+    target: targetCents / 100,
+    collected: collectedCents / 100,
+    expected: expectedCents / 100,
+  };
+}
+type PotSummary = ReturnType<typeof summarizePot>;
+
+function getPotPercentage(summary: PotSummary) {
+  return summary.target > 0 ? Math.round((summary.collected / summary.target) * 100) : 0;
+}
+
+const potIconOptions: Array<{ value: PotIcon; label: string; icon: typeof Users; tileClassName: string }> = [
+  { value: "tent", label: "Weekend", icon: Tent, tileClassName: "bg-emerald-50 text-emerald-700" },
+  { value: "utensils", label: "Etentje", icon: Utensils, tileClassName: "bg-blue-50 text-blue-700" },
+  { value: "plane", label: "Reis", icon: Plane, tileClassName: "bg-violet-50 text-violet-700" },
+  { value: "trophy", label: "Toernooi", icon: Trophy, tileClassName: "bg-amber-50 text-amber-700" },
+];
+
+const potViewOptions: Array<{ value: PotView; label: string }> = [
+  { value: "persoon", label: "Per persoon" },
+  { value: "maand", label: "Per maand" },
+];
+
+const potCellClassNames: Record<PotCellStatus, string> = {
+  betaald: "border-emerald-600 bg-emerald-600 text-white",
+  open: "border-dashed border-amber-500 bg-amber-50",
+  niet_betaald: "border-slate-200 bg-slate-200",
+  komt_nog: "border-dashed border-slate-300 bg-white",
+  doet_niet_mee: "border-transparent bg-transparent",
+};
+
+const potCellLabels: Record<PotCellStatus, string> = {
+  betaald: "Betaald",
+  open: "Staat nog open",
+  niet_betaald: "Niet betaald",
+  komt_nog: "Komt nog",
+  doet_niet_mee: "Doet niet mee",
+};
+
+// Wie wordt toegevoegd aan een potje dat in een eerdere maand is aangemaakt, stapt later in en betaalt vanaf
+// de lopende maand. Bij een nieuw potje, of in de maand waarin het is aangemaakt, doet iedereen de hele periode mee.
+function getPotJoinMonth(pot: Pot | null, startMonth: string, endMonth: string, currentMonthKey: string) {
+  if (!pot) return null;
+  const current = toMonthNumber(currentMonthKey);
+  const createdAt = new Date(pot.created_at);
+  const isLateJoin = createdAt.getFullYear() * 12 + createdAt.getMonth() < current
+    && current > toMonthNumber(startMonth)
+    && current <= toMonthNumber(endMonth);
+  return isLateJoin ? currentMonthKey : null;
+}
+
+function validatePotBasics(form: PotFormState) {
+  if (!form.name.trim()) return "Vul een naam in.";
+  const amount = parseAmountInput(form.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return "Vul een bedrag per maand groter dan 0 in.";
+  if (toMonthNumber(form.endMonth) < toMonthNumber(form.startMonth)) return "De laatste maand ligt vóór de eerste maand.";
+  return null;
+}
+
 function sanitizeUsername(username: string) {
   return username.trim().toLowerCase().replace(/\s+/g, ".").replace(/[^a-z0-9._-]/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 48);
 }
@@ -476,6 +663,36 @@ function SegmentedControl<T extends string>({ options, value, onChange, label }:
   );
 }
 
+function PotIconTile({ icon, className }: { icon: PotIcon; className?: string }) {
+  const option = potIconOptions.find((item) => item.value === icon) ?? potIconOptions[0];
+  const Icon = option.icon;
+  return (
+    <span className={`flex shrink-0 items-center justify-center rounded-xl ${option.tileClassName} ${className ?? ""}`}>
+      <Icon className="h-5 w-5" />
+    </span>
+  );
+}
+
+// Groen is wat er is opgehaald; het streepje staat waar we volgens schema nu zouden moeten zitten.
+function PotProgressBar({ summary, className }: { summary: PotSummary; className?: string }) {
+  const toPercent = (amount: number) => (summary.target > 0 ? Math.min(100, (amount / summary.target) * 100) : 0);
+  const showExpected = summary.expected > 0 && summary.expected < summary.target;
+  return (
+    <div className={`relative rounded-full bg-slate-100 ${className ?? "h-2.5"}`}>
+      <div className="absolute inset-y-0 left-0 rounded-full bg-emerald-500 transition-all" style={{ width: `${toPercent(summary.collected)}%` }} />
+      {showExpected ? (
+        <div className="absolute -inset-y-1 w-0.5 rounded-full bg-slate-900" style={{ left: `${toPercent(summary.expected)}%` }} />
+      ) : null}
+    </div>
+  );
+}
+
+function PotCellMark({ status }: { status: PotCellStatus }) {
+  if (status === "betaald") return <Check className="h-3.5 w-3.5" strokeWidth={3} />;
+  if (status === "doet_niet_mee") return <span className="h-0.5 w-2 rounded-full bg-slate-400" />;
+  return null;
+}
+
 const UsageLineChart = React.memo(function UsageLineChart({
   points,
 }: {
@@ -578,7 +795,7 @@ export default function SaldoTrackerApp() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
-  const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "statistieken">("saldo");
+  const [activeMainTab, setActiveMainTab] = useState<"saldo" | "rijschema" | "potjes" | "statistieken">("saldo");
   const [activeFinanceCategory, setActiveFinanceCategory] = useState<FinanceCategory>("saldo");
   const [fixedCharges, setFixedCharges] = useState<FixedCharge[]>([]);
   const [selectedFixedChargeId, setSelectedFixedChargeId] = useState<string | null>(null);
@@ -621,6 +838,18 @@ export default function SaldoTrackerApp() {
   const [playerGoals, setPlayerGoals] = useState<PlayerGoals[]>([]);
   const [topScorersView, setTopScorersView] = useState<TopScorersView>("dicht");
   const [topScorersMessage, setTopScorersMessage] = useState("");
+  const [pots, setPots] = useState<Pot[]>([]);
+  const [potParticipants, setPotParticipants] = useState<PotParticipant[]>([]);
+  const [potPayments, setPotPayments] = useState<PotPayment[]>([]);
+  // Zolang setup-potjes.sql niet gedraaid is bestaan de tabellen niet en blijft de tab leeg.
+  const [hasPotTables, setHasPotTables] = useState(true);
+  const [selectedPotId, setSelectedPotId] = useState<string | null>(null);
+  const [potView, setPotView] = useState<PotView>("persoon");
+  const [isEditingPot, setIsEditingPot] = useState(false);
+  const [potSheetMonth, setPotSheetMonth] = useState<string | null>(null);
+  const [potMessage, setPotMessage] = useState("");
+  const [potForm, setPotForm] = useState<PotFormState | null>(null);
+  const [isSavingPot, setIsSavingPot] = useState(false);
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [addUserForm, setAddUserForm] = useState({ username: "", name: "", password: "" });
   const [addUserMessage, setAddUserMessage] = useState("");
@@ -645,6 +874,9 @@ export default function SaldoTrackerApp() {
   const hasLoggedSessionResumeRef = useRef(false);
   const goalsFetchIdRef = useRef(0);
   const pendingGoalUpdatesRef = useRef(0);
+  const potsFetchIdRef = useRef(0);
+  const pendingPotUpdatesRef = useRef(0);
+  const potGridRef = useRef<HTMLDivElement | null>(null);
 
   const mergeUserWithAvatarCache = (user: User) => ({ ...user, avatar: user.avatar || avatarCacheRef.current[user.id] || "" });
   const getAvatarForUser = (user: Pick<User, "id" | "avatar">) => avatarCache[user.id] || avatarValueToSrc(user.avatar);
@@ -683,6 +915,11 @@ export default function SaldoTrackerApp() {
     setTransactions([]);
     setFixedCharges([]);
     setPlayerGoals([]);
+    setPots([]);
+    setPotParticipants([]);
+    setPotPayments([]);
+    setSelectedPotId(null);
+    setPotForm(null);
   };
 
   const syncSessionState = async (
@@ -732,6 +969,27 @@ export default function SaldoTrackerApp() {
     setPlayerGoals(data ?? []);
   };
 
+  // Zelfde aanpak als bij de doelpunten: tijdens het afvinken telt alleen het antwoord van na de laatste klik.
+  const refreshPots = async () => {
+    const fetchId = ++potsFetchIdRef.current;
+    const [potResult, participantResult, paymentResult] = await Promise.all([
+      supabase.from("pots").select("id, created_at, name, icon, monthly_amount, start_month, end_month, archived_at").order("start_month", { ascending: false }),
+      supabase.from("pot_participants").select("pot_id, user_id, start_month"),
+      supabase.from("pot_payments").select("pot_id, user_id, month"),
+    ]);
+    const potsError = potResult.error ?? participantResult.error ?? paymentResult.error;
+    if (potsError) {
+      console.error("Fout bij ophalen potjes:", potsError);
+      setHasPotTables(false);
+      return;
+    }
+    if (fetchId !== potsFetchIdRef.current || pendingPotUpdatesRef.current > 0) return;
+    setHasPotTables(true);
+    setPots((potResult.data ?? []).map((pot) => ({ ...pot, monthly_amount: Number(pot.monthly_amount) })));
+    setPotParticipants(participantResult.data ?? []);
+    setPotPayments(paymentResult.data ?? []);
+  };
+
   const refreshUsers = async ({ force = false, includeAppEvents }: { force?: boolean; includeAppEvents?: boolean } = {}) => {
     if (refreshUsersPromiseRef.current) return refreshUsersPromiseRef.current;
 
@@ -773,6 +1031,7 @@ export default function SaldoTrackerApp() {
         setFixedCharges(fixedChargeData);
       }
       await refreshPlayerGoals();
+      await refreshPots();
       const { data: rideScheduleData, error: rideScheduleError } = await supabase
         .from("ride_schedule").select("id, season, match_date, team, location, kilometers, riders").order("match_date", { ascending: true });
       if (rideScheduleError) {
@@ -936,6 +1195,9 @@ export default function SaldoTrackerApp() {
       .on("postgres_changes", { event: "*", schema: "public", table: "fixed_charges" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "ride_schedule" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "player_goals" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "pots" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "pot_participants" }, () => scheduleRealtimeRefresh(false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "pot_payments" }, () => scheduleRealtimeRefresh(false))
       .on("postgres_changes", { event: "*", schema: "public", table: "app_events" }, () => {
         if (isDev(currentUser.role)) scheduleRealtimeRefresh(false);
       })
@@ -1406,6 +1668,120 @@ export default function SaldoTrackerApp() {
       .filter((row) => !isAdmin(row.role) || row.goals > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [activeStatsSeason, playerGoals, users]);
+
+  // Eenmalig bij het mounten, net als bij de materiaalsletjes: de lopende maand kleurt oranje als hij nog open staat.
+  const currentMonthKey = useMemo(() => getCurrentMonthKey(), []);
+  const paidPotKeys = useMemo(
+    () => new Set(potPayments.map((payment) => getPotPaymentKey(payment.pot_id, payment.user_id, payment.month))),
+    [potPayments],
+  );
+  const participantsByPot = useMemo(() => {
+    const groups = new Map<string, PotParticipant[]>();
+    for (const participant of potParticipants) {
+      const group = groups.get(participant.pot_id);
+      if (group) group.push(participant); else groups.set(participant.pot_id, [participant]);
+    }
+    return groups;
+  }, [potParticipants]);
+  const potSummaries = useMemo(
+    () => new Map(pots.map((pot) => [pot.id, summarizePot(pot, participantsByPot.get(pot.id) ?? [], paidPotKeys, currentMonthKey)])),
+    [currentMonthKey, paidPotKeys, participantsByPot, pots],
+  );
+  const activePots = useMemo(() => pots.filter((pot) => !pot.archived_at), [pots]);
+  const archivedPots = useMemo(() => pots.filter((pot) => pot.archived_at), [pots]);
+  // Potjes waarin de lopende maand voor de ingelogde speler nog geen vinkje heeft.
+  const openPotReminders = useMemo(() => {
+    if (!currentUser) return [];
+    return activePots.filter((pot) => {
+      const summary = potSummaries.get(pot.id);
+      return summary?.statusesByUser.get(currentUser.id)?.[summary.currentIndex] === "open";
+    });
+  }, [activePots, currentUser, potSummaries]);
+  const selectedPot = useMemo(() => pots.find((pot) => pot.id === selectedPotId) ?? null, [pots, selectedPotId]);
+  const selectedPotSummary = selectedPot ? potSummaries.get(selectedPot.id) ?? null : null;
+  // Jijzelf bovenaan, daarna op naam. In het raster staan voornamen; zijn die dubbel, dan komt de eerste letter van de achternaam erbij.
+  const selectedPotRows = useMemo(() => {
+    if (!selectedPot || !selectedPotSummary) return [];
+    const rows = (participantsByPot.get(selectedPot.id) ?? []).map((participant) => {
+      const user = users.find((u) => u.id === participant.user_id) ?? null;
+      return {
+        userId: participant.user_id,
+        user,
+        name: user?.name ?? "Onbekend",
+        isCurrentUser: participant.user_id === currentUser?.id,
+        statuses: selectedPotSummary.statusesByUser.get(participant.user_id) ?? [],
+      };
+    }).sort((a, b) => Number(b.isCurrentUser) - Number(a.isCurrentUser) || a.name.localeCompare(b.name));
+    const firstNameCounts = new Map<string, number>();
+    for (const row of rows) {
+      const firstName = row.name.split(" ")[0];
+      firstNameCounts.set(firstName, (firstNameCounts.get(firstName) ?? 0) + 1);
+    }
+    return rows.map((row) => {
+      const [firstName, ...rest] = row.name.split(" ");
+      const lastInitial = rest.length > 0 ? ` ${rest[rest.length - 1][0]?.toUpperCase()}.` : "";
+      const shortName = (firstNameCounts.get(firstName) ?? 0) > 1 ? `${firstName}${lastInitial}` : firstName;
+      return { ...row, shortName: row.isCurrentUser ? "Jij" : shortName };
+    });
+  }, [currentUser?.id, participantsByPot, selectedPot, selectedPotSummary, users]);
+  const selectedPotCurrentIndex = selectedPotSummary?.currentIndex ?? -1;
+  const selectedPotHasLateJoiners = selectedPotRows.some((row) => row.statuses.includes("doet_niet_mee"));
+  const selectedPotTiles = (() => {
+    if (!selectedPot || !selectedPotSummary) return [];
+    const monthCount = selectedPotSummary.months.length;
+    const currentTotals = selectedPotSummary.monthTotals[selectedPotCurrentIndex];
+    const monthsPassed = selectedPotCurrentIndex >= 0
+      ? selectedPotCurrentIndex + 1
+      : toMonthNumber(currentMonthKey) > toMonthNumber(selectedPot.end_month) ? monthCount : 0;
+    return [
+      { label: "Maand", value: `${monthsPassed} van ${monthCount}` },
+      { label: "Deelnemers", value: String(selectedPotRows.length) },
+      currentTotals
+        ? { label: capitalize(formatMonthLong(currentTotals.month)), value: `${currentTotals.paid}/${currentTotals.eligible}` }
+        : { label: "Per persoon", value: euroCompact(selectedPot.monthly_amount * monthCount) },
+    ];
+  })();
+  // In het formulier staan de spelers, plus wie al meedoet maar inmiddels admin is.
+  const potFormUsers = useMemo(() => {
+    if (!potForm) return [];
+    return users
+      .filter((user) => !isAdmin(user.role) || potForm.selectedUserIds.includes(user.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [potForm, users]);
+  const visiblePotFormUsers = useMemo(() => {
+    const query = potForm?.query.trim().toLowerCase() ?? "";
+    return query ? potFormUsers.filter((user) => user.name.toLowerCase().includes(query)) : potFormUsers;
+  }, [potForm?.query, potFormUsers]);
+  // Een jaar terug tot twee jaar vooruit, en altijd ruim genoeg voor de maanden die al gekozen zijn.
+  const potFormMonthOptions = useMemo(() => {
+    if (!potForm) return [];
+    const current = toMonthNumber(currentMonthKey);
+    const first = Math.min(current - 12, toMonthNumber(potForm.startMonth));
+    const last = Math.max(current + 24, toMonthNumber(potForm.endMonth));
+    return getMonthKeysBetween(toMonthKey(first), toMonthKey(last));
+  }, [currentMonthKey, potForm]);
+  const potFormMonthCount = potForm ? Math.max(0, toMonthNumber(potForm.endMonth) - toMonthNumber(potForm.startMonth) + 1) : 0;
+  const potFormAmount = potForm ? parseAmountInput(potForm.amount) : 0;
+  const potFormAmountIsValid = Number.isFinite(potFormAmount) && potFormAmount > 0;
+  // Het potje waarvan "Zelfde deelnemers als" de deelnemers overneemt: het nieuwste andere potje.
+  const potToCopyParticipantsFrom = potForm
+    ? pots.filter((pot) => pot.id !== potForm.potId && (participantsByPot.get(pot.id)?.length ?? 0) > 0)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+    : null;
+  const editedPot = potForm?.potId ? pots.find((pot) => pot.id === potForm.potId) ?? null : null;
+  const potFormJoinMonth = potForm ? getPotJoinMonth(editedPot, potForm.startMonth, potForm.endMonth, currentMonthKey) : null;
+  const areAllVisiblePotFormUsersSelected = visiblePotFormUsers.length > 0
+    && visiblePotFormUsers.every((user) => potForm?.selectedUserIds.includes(user.id));
+  // De afvinklijst van één maand: iedereen die die maand meedoet.
+  const potSheetIndex = selectedPotSummary && potSheetMonth ? selectedPotSummary.months.indexOf(potSheetMonth) : -1;
+  const potSheetRows = potSheetIndex >= 0 ? selectedPotRows.filter((row) => row.statuses[potSheetIndex] !== "doet_niet_mee") : [];
+  const potSheetUnpaidIds = potSheetRows.filter((row) => row.statuses[potSheetIndex] !== "betaald").map((row) => row.userId);
+
+  // Bij een lang potje staat de lopende maand meteen in beeld, met een paar maanden ervoor.
+  useEffect(() => {
+    if (!potGridRef.current || selectedPotCurrentIndex < 0) return;
+    potGridRef.current.scrollLeft = Math.max(0, (selectedPotCurrentIndex - 3) * 28);
+  }, [potView, selectedPotCurrentIndex, selectedPotId]);
 
   const joostUserIds = useMemo(
     () => new Set(users.filter((user) => user.name === "Joost Jansen").map((user) => user.id)),
@@ -2027,6 +2403,206 @@ export default function SaldoTrackerApp() {
       setAdjustmentMessage(`Aanpassing van ${formatDate(adjustment.created_at)} verwijderd.`);
     } finally {
       setIsSavingAdjustment(false);
+    }
+  };
+
+  const openPot = (potId: string) => {
+    setSelectedPotId(potId);
+    setPotView("persoon");
+    setIsEditingPot(false);
+    setPotSheetMonth(null);
+    setPotMessage("");
+    window.scrollTo({ top: 0 });
+  };
+
+  const closePot = () => {
+    setSelectedPotId(null);
+    setIsEditingPot(false);
+    setPotSheetMonth(null);
+    setPotMessage("");
+  };
+
+  // Vinkjes zetten of weghalen voor één maand. Het scherm verspringt meteen; gaat opslaan mis,
+  // dan haalt de laatste refresh de echte stand weer op.
+  const markPotPayments = async (potId: string, month: string, userIds: string[], paid: boolean) => {
+    if (userIds.length === 0) return;
+    const isAffected = (payment: PotPayment) => payment.pot_id === potId && payment.month === month && userIds.includes(payment.user_id);
+    setPotPayments((prev) => {
+      const remaining = prev.filter((payment) => !isAffected(payment));
+      return paid ? [...remaining, ...userIds.map((userId) => ({ pot_id: potId, user_id: userId, month }))] : remaining;
+    });
+    setPotMessage("");
+
+    pendingPotUpdatesRef.current += 1;
+    try {
+      const { error: paymentError } = paid
+        ? await supabase
+          .from("pot_payments")
+          .upsert(userIds.map((userId) => ({ pot_id: potId, user_id: userId, month })), { onConflict: "pot_id,user_id,month", ignoreDuplicates: true })
+        : await supabase.from("pot_payments").delete().eq("pot_id", potId).eq("month", month).in("user_id", userIds);
+      if (paymentError) {
+        console.error("Fout bij opslaan potjesbetaling:", paymentError);
+        setPotMessage("Opslaan is mislukt. De vinkjes zijn teruggezet.");
+      }
+    } finally {
+      pendingPotUpdatesRef.current -= 1;
+    }
+    if (pendingPotUpdatesRef.current === 0) await refreshPots();
+  };
+
+  const openNewPotForm = () => {
+    const current = toMonthNumber(currentMonthKey);
+    setPotForm({
+      potId: null,
+      step: 1,
+      name: "",
+      icon: "tent",
+      amount: "",
+      startMonth: currentMonthKey,
+      endMonth: toMonthKey(current + 9),
+      selectedUserIds: [],
+      query: "",
+      message: "",
+    });
+  };
+
+  const openEditPotForm = (pot: Pot) => {
+    setPotForm({
+      potId: pot.id,
+      step: 1,
+      name: pot.name,
+      icon: pot.icon,
+      amount: pot.monthly_amount.toFixed(2),
+      startMonth: pot.start_month,
+      endMonth: pot.end_month,
+      selectedUserIds: (participantsByPot.get(pot.id) ?? []).map((participant) => participant.user_id),
+      query: "",
+      message: "",
+    });
+  };
+
+  const updatePotForm = (patch: Partial<Omit<PotFormState, "message">>) => {
+    setPotForm((prev) => (prev ? { ...prev, ...patch, message: "" } : prev));
+  };
+
+  const togglePotFormUser = (id: string) => {
+    setPotForm((prev) => prev ? {
+      ...prev,
+      selectedUserIds: prev.selectedUserIds.includes(id) ? prev.selectedUserIds.filter((uid) => uid !== id) : [...prev.selectedUserIds, id],
+      message: "",
+    } : prev);
+  };
+
+  // "Selecteer alles" werkt op de lijst zoals die nu zichtbaar is, dus ook na zoeken.
+  const toggleAllPotFormUsers = () => {
+    const visibleIds = visiblePotFormUsers.map((user) => user.id);
+    setPotForm((prev) => {
+      if (!prev) return prev;
+      const allSelected = visibleIds.every((id) => prev.selectedUserIds.includes(id));
+      const selectedUserIds = allSelected
+        ? prev.selectedUserIds.filter((id) => !visibleIds.includes(id))
+        : Array.from(new Set([...prev.selectedUserIds, ...visibleIds]));
+      return { ...prev, selectedUserIds, message: "" };
+    });
+  };
+
+  const goToPotParticipants = () => {
+    if (!potForm) return;
+    const validationError = validatePotBasics(potForm);
+    if (validationError) { setPotForm((prev) => (prev ? { ...prev, message: validationError } : prev)); return; }
+    updatePotForm({ step: 2 });
+  };
+
+  const savePotForm = async () => {
+    if (!potForm) return;
+    const failWith = (message: string) => setPotForm((prev) => (prev ? { ...prev, message } : prev));
+    const validationError = validatePotBasics(potForm);
+    if (validationError) { failWith(validationError); return; }
+    if (potForm.selectedUserIds.length === 0) { failWith("Selecteer minstens 1 deelnemer."); return; }
+
+    const potValues = {
+      name: potForm.name.trim(),
+      icon: potForm.icon,
+      monthly_amount: Math.round(parseAmountInput(potForm.amount) * 100) / 100,
+      start_month: potForm.startMonth,
+      end_month: potForm.endMonth,
+    };
+    const existingPot = potForm.potId ? pots.find((pot) => pot.id === potForm.potId) ?? null : null;
+    const existingIds = new Set((existingPot ? participantsByPot.get(existingPot.id) ?? [] : []).map((participant) => participant.user_id));
+    const removedIds = Array.from(existingIds).filter((id) => !potForm.selectedUserIds.includes(id));
+    const addedIds = potForm.selectedUserIds.filter((id) => !existingIds.has(id));
+
+    if (existingPot) {
+      const removedWithPayments = removedIds.filter((id) => potPayments.some((payment) => payment.pot_id === existingPot.id && payment.user_id === id));
+      if (removedWithPayments.length > 0) {
+        const names = removedWithPayments.map((id) => users.find((u) => u.id === id)?.name ?? "Onbekend");
+        if (!window.confirm(`${summarizeNames(names)} uit het potje halen? De vinkjes die al gezet zijn gaan dan ook weg.`)) return;
+      }
+    }
+
+    const joinMonth = getPotJoinMonth(existingPot, potForm.startMonth, potForm.endMonth, currentMonthKey);
+
+    setIsSavingPot(true);
+    try {
+      let potId = existingPot?.id ?? null;
+      if (potId) {
+        const { error: updateError } = await supabase.from("pots").update(potValues).eq("id", potId);
+        if (updateError) { console.error("Fout bij bijwerken potje:", updateError); failWith("Opslaan van het potje is mislukt."); return; }
+        if (removedIds.length > 0) {
+          const { error: removeError } = await supabase.from("pot_participants").delete().eq("pot_id", potId).in("user_id", removedIds);
+          if (removeError) { console.error("Fout bij verwijderen deelnemers:", removeError); failWith("Deelnemers weghalen is mislukt."); return; }
+        }
+      } else {
+        const { data, error: insertError } = await supabase.from("pots").insert(potValues).select("id").single();
+        if (insertError || !data) { console.error("Fout bij aanmaken potje:", insertError); failWith("Aanmaken van het potje is mislukt."); return; }
+        potId = data.id as string;
+      }
+      if (addedIds.length > 0) {
+        const { error: participantError } = await supabase
+          .from("pot_participants")
+          .insert(addedIds.map((userId) => ({ pot_id: potId, user_id: userId, start_month: joinMonth })));
+        if (participantError) { console.error("Fout bij toevoegen deelnemers:", participantError); failWith("Deelnemers toevoegen is mislukt."); return; }
+      }
+
+      await refreshPots();
+      setPotForm(null);
+      openPot(potId);
+    } finally {
+      setIsSavingPot(false);
+    }
+  };
+
+  const setPotArchived = async (pot: Pot, archived: boolean) => {
+    setIsSavingPot(true);
+    try {
+      const { error: archiveError } = await supabase.from("pots").update({ archived_at: archived ? new Date().toISOString() : null }).eq("id", pot.id);
+      if (archiveError) {
+        console.error("Fout bij archiveren potje:", archiveError);
+        setPotForm((prev) => (prev ? { ...prev, message: archived ? "Archiveren is mislukt." : "Terugzetten is mislukt." } : prev));
+        return;
+      }
+      await refreshPots();
+      setPotForm(null);
+    } finally {
+      setIsSavingPot(false);
+    }
+  };
+
+  const deletePot = async (pot: Pot) => {
+    if (!window.confirm(`"${pot.name}" verwijderen? Alle deelnemers en vinkjes van dit potje gaan ook weg.`)) return;
+    setIsSavingPot(true);
+    try {
+      const { data, error: deleteError } = await supabase.from("pots").delete().eq("id", pot.id).select("id");
+      if (deleteError || !data || data.length === 0) {
+        console.error("Fout bij verwijderen potje:", deleteError);
+        setPotForm((prev) => (prev ? { ...prev, message: "Verwijderen is mislukt." } : prev));
+        return;
+      }
+      await refreshPots();
+      setPotForm(null);
+      closePot();
+    } finally {
+      setIsSavingPot(false);
     }
   };
 
@@ -2801,6 +3377,375 @@ export default function SaldoTrackerApp() {
                   </section>
                 </motion.div>
               </>
+            ) : activeMainTab === "potjes" ? (
+              <motion.div key={selectedPot?.id ?? "potjes"} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
+                {!hasPotTables ? (
+                  <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    Potjes werken pas nadat scripts/setup-potjes.sql in Supabase is gedraaid.
+                  </div>
+                ) : null}
+
+                {selectedPot && selectedPotSummary ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={closePot}
+                        className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm transition hover:bg-slate-50"
+                        aria-label="Terug naar potjes"
+                      >
+                        <ArrowLeft className="h-5 w-5" />
+                      </button>
+                      {isAdmin(currentUser.role) ? (
+                        <button
+                          type="button"
+                          onClick={() => openEditPotForm(selectedPot)}
+                          className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm transition hover:bg-slate-50"
+                          aria-label="Potje bewerken"
+                        >
+                          <Settings2 className="h-5 w-5" />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-4 rounded-xl bg-white p-5 shadow-sm">
+                      <div className="flex items-center gap-3">
+                        <PotIconTile icon={selectedPot.icon} className="h-12 w-12" />
+                        <div className="min-w-0">
+                          <h1 className="truncate text-xl font-bold tracking-tight text-slate-900">{selectedPot.name}</h1>
+                          <p className="truncate text-sm text-slate-500">
+                            {formatMonthWithYear(selectedPot.start_month)} – {formatMonthWithYear(selectedPot.end_month)} · {euroCompact(selectedPot.monthly_amount)} p.p. per maand
+                          </p>
+                        </div>
+                      </div>
+                      {selectedPot.archived_at ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[#f3f4f6] px-2.5 py-1 text-xs font-medium text-slate-600">
+                          <Archive className="h-3.5 w-3.5" />
+                          Gearchiveerd
+                        </span>
+                      ) : null}
+                      <div>
+                        <p className="text-sm text-slate-500">Opgehaald</p>
+                        <p className="mt-1 text-4xl font-bold tracking-tight text-slate-900">
+                          {euroCompact(selectedPotSummary.collected)}
+                          <span className="text-lg font-medium tracking-normal text-slate-400"> van {euroCompact(selectedPotSummary.target)}</span>
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        <PotProgressBar summary={selectedPotSummary} className="h-3" />
+                        <div className="flex items-center justify-between gap-3 text-sm text-slate-500">
+                          <span><span className="font-semibold text-emerald-700">{getPotPercentage(selectedPotSummary)}%</span> van het doel</span>
+                          {selectedPotSummary.expected > 0 && selectedPotSummary.expected < selectedPotSummary.target ? (
+                            <span className="flex items-center gap-1.5">
+                              <span className="h-3 w-0.5 rounded-full bg-slate-900" aria-hidden="true" />
+                              op schema: {euroCompact(selectedPotSummary.expected)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {selectedPotTiles.map((tile) => (
+                          <div key={tile.label} className="rounded-xl bg-[#f3f4f6] px-3 py-2.5">
+                            <p className="truncate text-xs text-slate-500">{tile.label}</p>
+                            <p className="mt-0.5 truncate text-lg font-bold tracking-tight text-slate-900">{tile.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div role="group" aria-label="Weergave" className="grid grid-cols-2 gap-1 rounded-xl bg-white p-1 shadow-sm">
+                      {potViewOptions.map((option) => {
+                        const isActive = potView === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => { setPotView(option.value); setIsEditingPot(false); setPotSheetMonth(null); }}
+                            aria-pressed={isActive}
+                            className={`h-10 rounded-lg text-sm font-medium transition ${isActive ? "bg-slate-900 text-white shadow-sm" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"}`}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {potView === "persoon" ? (
+                      <div className="rounded-xl bg-white pb-4 shadow-sm">
+                        <div className="flex items-center gap-3 px-4 pt-4">
+                          <div className="min-w-0 flex-1">
+                            <h2 className="text-base font-semibold text-slate-900">Wie heeft wat betaald</h2>
+                            <p className="text-sm text-slate-500">
+                              {isEditingPot
+                                ? "Tik op een vakje, of op een maand voor de afvinklijst."
+                                : `${selectedPotRows.length} ${selectedPotRows.length === 1 ? "deelnemer" : "deelnemers"}`}
+                            </p>
+                          </div>
+                          {isAdmin(currentUser.role) ? (
+                            <button
+                              type="button"
+                              onClick={() => { setPotMessage(""); setPotSheetMonth(null); setIsEditingPot((prev) => !prev); }}
+                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingPot ? "bg-slate-900 text-white" : "bg-[#f3f4f6] text-slate-600 hover:bg-slate-200"}`}
+                              aria-label={isEditingPot ? "Klaar met afvinken" : "Betalingen afvinken"}
+                            >
+                              {isEditingPot ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+                            </button>
+                          ) : null}
+                        </div>
+                        {potMessage ? (
+                          <div className="mx-4 mt-3 rounded-xl bg-[#f3f4f6] px-4 py-3 text-sm text-slate-700">{potMessage}</div>
+                        ) : null}
+                        {selectedPotRows.length === 0 ? (
+                          <p className="px-4 pt-3 text-sm text-slate-500">Nog geen deelnemers.</p>
+                        ) : (
+                          <div ref={potGridRef} className="mt-3 overflow-x-auto">
+                            {/* De namenkolom blijft staan terwijl de maanden horizontaal scrollen. */}
+                            <div className="w-max min-w-full space-y-1 pb-1 pr-4">
+                              <div className="flex items-end gap-1">
+                                <div className="sticky left-0 z-10 w-28 shrink-0 self-stretch bg-white" />
+                                {selectedPotSummary.months.map((month, index) => {
+                                  const isCurrent = index === selectedPotSummary.currentIndex;
+                                  const labelClassName = `text-[11px] ${isCurrent ? "font-bold text-amber-700" : "font-medium text-slate-500"}`;
+                                  return isEditingPot ? (
+                                    <button
+                                      key={month}
+                                      type="button"
+                                      onClick={() => setPotSheetMonth(month)}
+                                      className={`h-7 w-6 shrink-0 rounded-md bg-[#f3f4f6] transition hover:bg-slate-200 ${labelClassName}`}
+                                      aria-label={`Afvinklijst voor ${formatMonthLong(month)} ${month.slice(0, 4)}`}
+                                    >
+                                      {formatMonthShort(month)}
+                                    </button>
+                                  ) : (
+                                    <span key={month} className={`flex w-6 shrink-0 flex-col items-center gap-0.5 ${labelClassName}`}>
+                                      {formatMonthShort(month)}
+                                      <span className={`h-1 w-1 rounded-full ${isCurrent ? "bg-amber-500" : "bg-transparent"}`} aria-hidden="true" />
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                              {selectedPotRows.map((row) => (
+                                <div key={row.userId} className="flex items-center gap-1">
+                                  <div className="sticky left-0 z-10 flex w-28 shrink-0 items-center gap-1.5 bg-white py-0.5 pl-4">
+                                    <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" />
+                                    <span className={`truncate text-[13px] ${row.isCurrentUser ? "font-semibold text-slate-900" : "text-slate-700"}`}>{row.shortName}</span>
+                                  </div>
+                                  {row.statuses.map((status, index) => {
+                                    const month = selectedPotSummary.months[index];
+                                    const cellClassName = `flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-[1.5px] ${potCellClassNames[status]}`;
+                                    const cellLabel = `${row.name}, ${formatMonthLong(month)} ${month.slice(0, 4)}: ${potCellLabels[status]}`;
+                                    return isEditingPot && status !== "doet_niet_mee" ? (
+                                      <button
+                                        key={month}
+                                        type="button"
+                                        onClick={() => void markPotPayments(selectedPot.id, month, [row.userId], status !== "betaald")}
+                                        className={`${cellClassName} transition active:scale-90`}
+                                        aria-label={cellLabel}
+                                      >
+                                        <PotCellMark status={status} />
+                                      </button>
+                                    ) : (
+                                      <span key={month} role="img" aria-label={cellLabel} className={cellClassName}>
+                                        <PotCellMark status={status} />
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              ))}
+                              <div className="flex items-end gap-1 pt-1" aria-hidden="true">
+                                <div className="sticky left-0 z-10 w-28 shrink-0 self-stretch bg-white pl-4 text-[11px] font-medium leading-6 text-slate-500">Per maand</div>
+                                {selectedPotSummary.monthTotals.map((total) => {
+                                  const isComplete = total.eligible > 0 && total.paid === total.eligible;
+                                  return (
+                                    <div key={total.month} className="flex h-6 w-6 shrink-0 items-end overflow-hidden rounded-md bg-slate-100">
+                                      <div
+                                        className={`w-full ${isComplete ? "bg-emerald-600" : "bg-emerald-400"}`}
+                                        style={{ height: `${total.eligible > 0 ? (total.paid / total.eligible) * 100 : 0}%` }}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 px-4 text-xs text-slate-500">
+                          {(["betaald", "open", "niet_betaald", "komt_nog"] as const).map((status) => (
+                            <span key={status} className="flex items-center gap-1.5">
+                              <span className={`h-3 w-3 rounded-sm border-[1.5px] ${potCellClassNames[status]}`} aria-hidden="true" />
+                              {potCellLabels[status]}
+                            </span>
+                          ))}
+                          {selectedPotHasLateJoiners ? (
+                            <span className="flex items-center gap-1.5">
+                              <span className="h-0.5 w-3 rounded-full bg-slate-400" aria-hidden="true" />
+                              Doet nog niet mee
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 rounded-xl bg-white shadow-sm">
+                        {selectedPotSummary.monthTotals.map((total, index) => {
+                          const isCurrent = index === selectedPotSummary.currentIndex;
+                          const isFuture = toMonthNumber(total.month) > toMonthNumber(currentMonthKey);
+                          const isComplete = total.eligible > 0 && total.paid === total.eligible;
+                          const openRows = selectedPotRows.filter((row) => row.statuses[index] === "open" || row.statuses[index] === "niet_betaald");
+                          return (
+                            <div key={total.month} className="space-y-2 px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className={`truncate text-sm font-semibold ${isFuture ? "text-slate-500" : "text-slate-900"}`}>
+                                    {capitalize(formatMonthLong(total.month))} {total.month.slice(0, 4)}
+                                  </span>
+                                  {isCurrent ? (
+                                    <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">deze maand</span>
+                                  ) : null}
+                                </div>
+                                <span className={`flex shrink-0 items-center gap-1 text-sm font-semibold ${isComplete ? "text-emerald-700" : "text-slate-600"}`}>
+                                  {isComplete ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : null}
+                                  {isFuture
+                                    ? total.paid > 0 ? `${total.paid} vooruit betaald` : "Komt nog"
+                                    : `${total.paid} van ${total.eligible}`}
+                                </span>
+                              </div>
+                              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                <div
+                                  className={`h-full rounded-full ${isComplete ? "bg-emerald-600" : "bg-emerald-400"}`}
+                                  style={{ width: `${total.eligible > 0 ? (total.paid / total.eligible) * 100 : 0}%` }}
+                                />
+                              </div>
+                              {!isFuture && openRows.length > 0 ? (
+                                <div className="flex items-center gap-2">
+                                  <div className="flex shrink-0 -space-x-1.5">
+                                    {openRows.slice(0, 5).map((row) => (
+                                      <UserAvatar key={row.userId} name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-6 w-6 ring-2 ring-white" fallbackClassName="text-[10px]" />
+                                    ))}
+                                  </div>
+                                  <p className="min-w-0 truncate text-xs text-slate-500">Nog open: {summarizeNames(openRows.map((row) => row.shortName))}</p>
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {openPotReminders.map((pot) => (
+                      <button
+                        key={pot.id}
+                        type="button"
+                        onClick={() => openPot(pot.id)}
+                        className="flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-left transition hover:bg-amber-100 active:scale-[0.99]"
+                      >
+                        <span className="h-9 w-9 shrink-0 rounded-lg border-2 border-dashed border-amber-500 bg-white" aria-hidden="true" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-amber-900">{capitalize(formatMonthLong(currentMonthKey))} staat nog open</p>
+                          <p className="truncate text-sm text-amber-800">{pot.name} · {euroCompact(pot.monthly_amount)}</p>
+                        </div>
+                        <ChevronRight className="h-5 w-5 shrink-0 text-amber-700" />
+                      </button>
+                    ))}
+
+                    <section className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 px-1">
+                        <h2 className="text-sm font-semibold text-slate-900">Potjes</h2>
+                        {isAdmin(currentUser.role) ? (
+                          <Button type="button" onClick={openNewPotForm} className="h-9 rounded-full px-3 text-sm">
+                            <Plus className="mr-1 h-4 w-4" />
+                            Nieuw potje
+                          </Button>
+                        ) : (
+                          <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{activePots.length}</span>
+                        )}
+                      </div>
+                      {activePots.length === 0 ? (
+                        <div className="rounded-xl bg-white p-4 text-center text-sm text-slate-500 shadow-sm">
+                          {isAdmin(currentUser.role) ? "Nog geen potjes. Maak er een aan met Nieuw potje." : "Er lopen nu geen potjes."}
+                        </div>
+                      ) : (
+                        activePots.map((pot) => {
+                          const summary = potSummaries.get(pot.id);
+                          if (!summary) return null;
+                          const currentTotals = summary.currentIndex >= 0 ? summary.monthTotals[summary.currentIndex] : null;
+                          return (
+                            <button
+                              key={pot.id}
+                              type="button"
+                              onClick={() => openPot(pot.id)}
+                              className="block w-full space-y-3 rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.99]"
+                            >
+                              <div className="flex items-center gap-3">
+                                <PotIconTile icon={pot.icon} className="h-11 w-11" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate font-semibold text-slate-900">{pot.name}</p>
+                                  <p className="truncate text-sm text-slate-500">
+                                    {euroCompact(pot.monthly_amount)} p.p. per maand · {formatMonthShort(pot.start_month)} – {formatMonthShort(pot.end_month)}
+                                  </p>
+                                </div>
+                                <ChevronRight className="h-5 w-5 shrink-0 text-slate-400" />
+                              </div>
+                              <div className="space-y-2">
+                                <div className="flex items-baseline justify-between gap-3">
+                                  <p className="text-2xl font-bold tracking-tight text-slate-900">
+                                    {euroCompact(summary.collected)}
+                                    <span className="text-sm font-medium tracking-normal text-slate-500"> van {euroCompact(summary.target)}</span>
+                                  </p>
+                                  <p className="text-sm font-semibold text-emerald-700">{getPotPercentage(summary)}%</p>
+                                </div>
+                                <PotProgressBar summary={summary} />
+                              </div>
+                              {currentTotals ? (
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="text-sm text-slate-500">
+                                    {capitalize(formatMonthLong(currentTotals.month))}: <span className="font-semibold text-slate-900">{currentTotals.paid} van {currentTotals.eligible}</span> betaald
+                                  </p>
+                                  <div className="flex max-w-[45%] flex-wrap justify-end gap-[3px]" aria-hidden="true">
+                                    {Array.from({ length: currentTotals.eligible }, (_, index) => (
+                                      <span key={index} className={`h-2 w-2 rounded-full ${index < currentTotals.paid ? "bg-emerald-500" : "bg-slate-200"}`} />
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-sm text-slate-500">
+                                  {toMonthNumber(currentMonthKey) < toMonthNumber(pot.start_month) ? `Begint in ${formatMonthLong(pot.start_month)}` : "Alle maanden zijn voorbij"}
+                                </p>
+                              )}
+                            </button>
+                          );
+                        })
+                      )}
+                    </section>
+
+                    {archivedPots.length > 0 ? (
+                      <section className="space-y-2">
+                        <div className="flex items-center justify-between px-1">
+                          <h2 className="text-sm font-semibold text-slate-900">Archief</h2>
+                          <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{archivedPots.length}</span>
+                        </div>
+                        <div className="divide-y divide-slate-100 rounded-xl bg-white px-2 shadow-sm">
+                          {archivedPots.map((pot) => (
+                            <button key={pot.id} type="button" onClick={() => openPot(pot.id)} className="flex w-full items-center gap-3 px-2 py-3 text-left">
+                              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700">
+                                <Archive className="h-4 w-4" />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-slate-900">{pot.name}</p>
+                                <p className="truncate text-xs text-slate-500">
+                                  {formatMonthWithYear(pot.start_month)} – {formatMonthWithYear(pot.end_month)} · {participantsByPot.get(pot.id)?.length ?? 0} deelnemers
+                                </p>
+                              </div>
+                              <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">{euroCompact(potSummaries.get(pot.id)?.collected ?? 0)}</p>
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+                  </>
+                )}
+              </motion.div>
             ) : activeMainTab === "statistieken" ? (
               <>
                 <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
@@ -3262,6 +4207,289 @@ export default function SaldoTrackerApp() {
         </div>
       ) : null}
 
+      {potForm ? (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-[#f3f4f6] p-3 pb-8 sm:p-4 md:p-6">
+          <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
+            <div className="relative flex h-10 items-center justify-center">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isSavingPot) return;
+                  if (potForm.step === 2) updatePotForm({ step: 1 }); else setPotForm(null);
+                }}
+                className="absolute left-0 flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-900 shadow-sm transition hover:bg-slate-50"
+                aria-label={potForm.step === 2 ? "Terug naar de basis" : "Sluiten"}
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <h1 className="text-lg font-semibold text-slate-900">{potForm.potId ? "Potje bewerken" : "Nieuw potje"}</h1>
+            </div>
+
+            <div className="space-y-2 px-1">
+              <p className="text-center text-sm text-slate-500">Stap {potForm.step} van 2 · {potForm.step === 1 ? "Basis" : "Deelnemers"}</p>
+              <div className="grid grid-cols-2 gap-1.5" aria-hidden="true">
+                <span className="h-1 rounded-full bg-slate-900" />
+                <span className={`h-1 rounded-full ${potForm.step === 2 ? "bg-slate-900" : "bg-slate-300"}`} />
+              </div>
+            </div>
+
+            {potForm.step === 1 ? (
+              <div className="space-y-4 rounded-xl bg-white p-4 shadow-sm">
+                <div className="space-y-2">
+                  <Label htmlFor="pot-name">Naam</Label>
+                  <Input
+                    id="pot-name" value={potForm.name}
+                    onChange={(e) => updatePotForm({ name: e.target.value })}
+                    placeholder="Bijv. Teamweekend 2027" className="h-12 rounded-xl"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Icoon</Label>
+                  <div role="group" aria-label="Icoon" className="grid grid-cols-4 gap-2">
+                    {potIconOptions.map((option) => {
+                      const isActive = potForm.icon === option.value;
+                      const Icon = option.icon;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => updatePotForm({ icon: option.value })}
+                          aria-pressed={isActive}
+                          className={`flex h-16 flex-col items-center justify-center gap-1 rounded-xl border text-xs font-medium transition ${isActive ? "border-slate-900 bg-slate-50 text-slate-900 ring-1 ring-slate-900" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                        >
+                          <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${option.tileClassName}`}>
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="pot-amount">Bedrag per maand</Label>
+                  <Input
+                    id="pot-amount" type="number" step="0.01" min="0" inputMode="decimal" value={potForm.amount}
+                    onChange={(e) => updatePotForm({ amount: e.target.value })}
+                    onKeyDown={blockMinusKey}
+                    placeholder="Bijv. 20,00" className="h-12 rounded-xl"
+                  />
+                  <p className="px-1 text-xs text-slate-500">Hetzelfde bedrag voor iedereen.</p>
+                </div>
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="pot-start-month">Eerste maand</Label>
+                      <select
+                        id="pot-start-month"
+                        value={potForm.startMonth}
+                        onChange={(e) => updatePotForm({ startMonth: e.target.value })}
+                        className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                      >
+                        {potFormMonthOptions.map((month) => (
+                          <option key={month} value={month}>{formatMonthWithYear(month)}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="pot-end-month">Laatste maand</Label>
+                      <select
+                        id="pot-end-month"
+                        value={potForm.endMonth}
+                        onChange={(e) => updatePotForm({ endMonth: e.target.value })}
+                        className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                      >
+                        {potFormMonthOptions.map((month) => (
+                          <option key={month} value={month}>{formatMonthWithYear(month)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <p className="px-1 text-xs text-slate-500">
+                    {potFormMonthCount === 0
+                      ? "De laatste maand ligt vóór de eerste maand."
+                      : `${potFormMonthCount} ${potFormMonthCount === 1 ? "maand" : "maanden"}${potFormAmountIsValid ? ` · ${euroCompact((Math.round(potFormAmount * 100) * potFormMonthCount) / 100)} per persoon` : ""}`}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 rounded-xl bg-white p-4 shadow-sm">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    type="search" aria-label="Zoek een teamgenoot" value={potForm.query}
+                    onChange={(e) => updatePotForm({ query: e.target.value })}
+                    placeholder="Zoek een teamgenoot" className="h-12 rounded-xl pl-9"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={toggleAllPotFormUsers}
+                    disabled={visiblePotFormUsers.length === 0}
+                    aria-pressed={areAllVisiblePotFormUsersSelected}
+                    className="flex items-center gap-3 py-1 text-sm font-medium text-slate-900 disabled:opacity-40"
+                  >
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${areAllVisiblePotFormUsersSelected ? "bg-slate-900 text-white" : "border-2 border-slate-300"}`}>
+                      {areAllVisiblePotFormUsersSelected ? <Check className="h-3.5 w-3.5" /> : null}
+                    </span>
+                    Selecteer alles
+                  </button>
+                  <span className="text-xs text-slate-500">{potForm.selectedUserIds.length} geselecteerd</span>
+                </div>
+                {potToCopyParticipantsFrom ? (
+                  <button
+                    type="button"
+                    onClick={() => updatePotForm({ selectedUserIds: (participantsByPot.get(potToCopyParticipantsFrom.id) ?? []).map((participant) => participant.user_id) })}
+                    className="flex w-full items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                  >
+                    <Copy className="h-4 w-4 shrink-0" />
+                    <span className="truncate">Zelfde deelnemers als {potToCopyParticipantsFrom.name}</span>
+                  </button>
+                ) : null}
+                <div className="max-h-96 space-y-2 overflow-y-auto rounded-xl bg-[#f3f4f6] p-2">
+                  {visiblePotFormUsers.length === 0 ? (
+                    <p className="px-2 py-3 text-sm text-slate-500">Niemand gevonden met die naam.</p>
+                  ) : (
+                    visiblePotFormUsers.map((user) => {
+                      const selected = potForm.selectedUserIds.includes(user.id);
+                      return (
+                        <button
+                          key={user.id} type="button" onClick={() => togglePotFormUser(user.id)}
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${selected ? "bg-slate-900 text-white" : "bg-white hover:bg-slate-50"}`}
+                        >
+                          <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-10 w-10 shrink-0" />
+                          <p className="min-w-0 flex-1 truncate font-medium">{user.name}</p>
+                          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${selected ? "bg-white text-slate-900" : "border-2 border-slate-300"}`}>
+                            {selected ? <Check className="h-3.5 w-3.5" /> : null}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+                {potFormJoinMonth ? (
+                  <p className="px-1 text-xs text-slate-500">Wie je nu toevoegt, doet mee vanaf {formatMonthLong(potFormJoinMonth)}.</p>
+                ) : null}
+                <div className="rounded-xl bg-slate-900 px-4 py-3 text-white">
+                  <p className="text-xs text-slate-300">Totaal doel</p>
+                  <p className="mt-0.5 text-2xl font-bold tracking-tight">
+                    {euroCompact((Math.round(potFormAmount * 100) * potFormMonthCount * potForm.selectedUserIds.length) / 100)}
+                  </p>
+                  <p className="text-xs text-slate-300">
+                    {potForm.selectedUserIds.length} {potForm.selectedUserIds.length === 1 ? "deelnemer" : "deelnemers"} × {potFormMonthCount} {potFormMonthCount === 1 ? "maand" : "maanden"} × {euroCompact(potFormAmount)}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {potForm.message ? (
+              <div className="rounded-xl bg-white px-4 py-3 text-sm text-slate-700 shadow-sm">{potForm.message}</div>
+            ) : null}
+
+            <div className="space-y-2">
+              {potForm.step === 1 ? (
+                <Button onClick={goToPotParticipants} className="h-12 w-full rounded-xl">Volgende</Button>
+              ) : (
+                <>
+                  <Button onClick={savePotForm} disabled={isSavingPot} className="h-12 w-full rounded-xl">
+                    {isSavingPot ? "Opslaan..." : potForm.potId ? "Opslaan" : "Potje aanmaken"}
+                  </Button>
+                  <Button type="button" variant="outline" disabled={isSavingPot} onClick={() => updatePotForm({ step: 1 })} className="h-12 w-full rounded-xl">
+                    Terug
+                  </Button>
+                </>
+              )}
+            </div>
+
+            {editedPot ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void setPotArchived(editedPot, !editedPot.archived_at)}
+                  disabled={isSavingPot}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-white text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {editedPot.archived_at ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
+                  {editedPot.archived_at ? "Terugzetten uit archief" : "Archiveren"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deletePot(editedPot)}
+                  disabled={isSavingPot}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-white text-sm font-semibold text-red-600 shadow-sm transition hover:bg-red-50 disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Potje verwijderen
+                </button>
+              </div>
+            ) : null}
+          </motion.div>
+        </div>
+      ) : null}
+
+      {selectedPot && isEditingPot && potSheetMonth && potSheetIndex >= 0 ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center" onClick={() => setPotSheetMonth(null)}>
+          <motion.div
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex max-h-[85vh] w-full max-w-md flex-col rounded-xl bg-white p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">{capitalize(formatMonthLong(potSheetMonth))} {potSheetMonth.slice(0, 4)}</h2>
+                <p className="text-sm text-slate-500">{potSheetRows.length - potSheetUnpaidIds.length} van {potSheetRows.length} betaald</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPotSheetMonth(null)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3f4f6] text-slate-700 transition hover:bg-slate-200"
+                aria-label="Sluiten"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const everyonePaid = potSheetUnpaidIds.length === 0;
+                void markPotPayments(selectedPot.id, potSheetMonth, everyonePaid ? potSheetRows.map((row) => row.userId) : potSheetUnpaidIds, !everyonePaid);
+              }}
+              aria-pressed={potSheetUnpaidIds.length === 0}
+              className="mt-4 flex w-full items-center gap-3 rounded-xl bg-[#f3f4f6] px-3 py-3 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-200"
+            >
+              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${potSheetUnpaidIds.length === 0 ? "bg-emerald-600 text-white" : "border-2 border-slate-300 bg-white"}`}>
+                {potSheetUnpaidIds.length === 0 ? <Check className="h-3.5 w-3.5" /> : null}
+              </span>
+              Iedereen heeft betaald
+            </button>
+            <div className="mt-2 min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto">
+              {potSheetRows.map((row) => {
+                const isPaid = row.statuses[potSheetIndex] === "betaald";
+                return (
+                  <button
+                    key={row.userId}
+                    type="button"
+                    onClick={() => void markPotPayments(selectedPot.id, potSheetMonth, [row.userId], !isPaid)}
+                    aria-pressed={isPaid}
+                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50"
+                  >
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${isPaid ? "bg-emerald-600 text-white" : "border-2 border-slate-300"}`}>
+                      {isPaid ? <Check className="h-3.5 w-3.5" /> : null}
+                    </span>
+                    <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-9 w-9 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{row.name}{row.isCurrentUser ? " (jij)" : ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <Button type="button" onClick={() => setPotSheetMonth(null)} className="mt-4 h-12 w-full rounded-xl">Klaar</Button>
+          </motion.div>
+        </div>
+      ) : null}
+
       {isAddUserModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => { if (isSavingUser) return; setIsAddUserModalOpen(false); }}>
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -3450,7 +4678,7 @@ export default function SaldoTrackerApp() {
 
       {isProfilePageOpen ? null : (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-        <div className="mx-auto grid w-full max-w-md grid-cols-3 py-3">
+        <div className="mx-auto grid w-full max-w-md grid-cols-4 py-3">
           <button onClick={() => setActiveMainTab("saldo")} className="flex w-full flex-col items-center justify-center">
             <Wallet className={`transition ${activeMainTab === "saldo" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "saldo" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Saldo</span>
@@ -3458,6 +4686,16 @@ export default function SaldoTrackerApp() {
           <button onClick={() => setActiveMainTab("rijschema")} className="flex w-full flex-col items-center justify-center">
             <CalendarDays className={`transition ${activeMainTab === "rijschema" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "rijschema" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Schema</span>
+          </button>
+          {/* Nog een keer op Potjes tikken brengt je vanuit een potje terug naar de lijst. */}
+          <button onClick={() => { if (activeMainTab === "potjes") closePot(); setActiveMainTab("potjes"); }} className="flex w-full flex-col items-center justify-center">
+            <span className="relative">
+              <PiggyBank className={`transition ${activeMainTab === "potjes" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
+              {openPotReminders.length > 0 ? (
+                <span className="absolute -right-1 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white" aria-label="Er staat een maand open" />
+              ) : null}
+            </span>
+            <span className={`mt-1 text-xs ${activeMainTab === "potjes" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Potjes</span>
           </button>
           <button onClick={() => setActiveMainTab("statistieken")} className="flex w-full flex-col items-center justify-center">
             <BarChart3 className={`transition ${activeMainTab === "statistieken" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
