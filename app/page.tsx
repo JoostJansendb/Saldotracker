@@ -251,20 +251,24 @@ const allUsersValue = "alle";
 const transactionPageSize = 30;
 const maxUsernameLength = 12;
 
-const statsKpiDetailTitles: Record<StatsKpiKey, { title: string; description: string }> = {
-  count: { title: "Vaakst opgewaardeerd", description: "Top 5 op aantal opwaarderingen." },
-  total: { title: "Meest opgewaardeerd", description: "Top 5 op totaal opgewaardeerd bedrag." },
-  average: { title: "Verdeling van opwaarderingen", description: "Hoe vaak elk bedrag is opgewaardeerd." },
-  largest: { title: "Grootste opwaardeerders", description: "Top 5 op grootste losse opwaardering." },
+// Wat een opengeklapte KPI-kaart laat zien, als regeltje boven de ranglijst of het histogram.
+const statsKpiDescriptions: Record<StatsKpiKey, string> = {
+  count: "Top 5 op aantal opwaarderingen",
+  total: "Top 5 op totaal opgewaardeerd bedrag",
+  average: "Hoe vaak elk bedrag is opgewaardeerd",
+  largest: "Top 5 op grootste losse opwaardering",
 };
 
-// Elke KPI-tegel een eigen tintje, uit dezelfde reeks als de tegels op een spelersprofiel; de popup erachter neemt het over.
+// Elke KPI-tegel een eigen tintje, uit dezelfde reeks als de tegels op een spelersprofiel.
 const statsKpiStyles: Record<StatsKpiKey, { icon: typeof Users; tileClassName: string }> = {
   count: { icon: Repeat, tileClassName: "bg-blue-50 text-blue-700" },
   total: { icon: Wallet, tileClassName: "bg-emerald-50 text-emerald-700" },
   average: { icon: BarChart3, tileClassName: "bg-violet-50 text-violet-700" },
   largest: { icon: Trophy, tileClassName: "bg-amber-50 text-amber-700" },
 };
+
+// Het openklappen van een KPI-kaart: de kaart en alles eronder schuiven met dezelfde veer mee.
+const statsLayoutTransition = { type: "spring", stiffness: 380, damping: 36 } as const;
 
 const transactionDirectionOptions: Array<{ value: TransactionDirection; label: string }> = [
   { value: "alle", label: "Alle" },
@@ -984,6 +988,30 @@ function ProfileStatTile({ icon: Icon, tileClassName, value, label }: {
         <p className="text-xl font-bold tracking-tight tabular-nums text-slate-900">{value}</p>
         <p className="mt-0.5 text-xs text-slate-500">{label}</p>
       </div>
+    </div>
+  );
+}
+
+type RankingEntry = { userId: string; rank: number; name: string; avatar: string; value: string };
+
+// Een ranglijst: plek, foto, naam en rechts de waarde, met dunne lijnen ertussen. Tikken opent het profiel.
+// Lange namen lopen door op een volgende regel in plaats van afgekapt te worden.
+function RankingList({ entries, onSelect }: { entries: RankingEntry[]; onSelect: (userId: string) => void }) {
+  return (
+    <div className="divide-y divide-slate-100">
+      {entries.map((entry) => (
+        <button
+          key={entry.userId}
+          type="button"
+          onClick={() => onSelect(entry.userId)}
+          className="flex w-full items-center gap-3 py-2.5 text-left transition active:opacity-70"
+        >
+          <span className="w-5 shrink-0 text-sm tabular-nums text-slate-500">{entry.rank}</span>
+          <UserAvatar name={entry.name} avatar={entry.avatar} className="h-9 w-9 shrink-0" />
+          <span className="min-w-0 flex-1 wrap-break-word text-sm font-medium leading-tight text-slate-900">{entry.name}</span>
+          <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">{entry.value}</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -1887,8 +1915,17 @@ export default function SaldoTrackerApp() {
     { key: "average", label: "Gemiddelde opwaardering", value: euro(statistics.averageTopUp) },
     { key: "largest", label: "Grootste opwaardering", value: euro(statistics.largestTopUp) },
   ];
+  // Een opengeklapte KPI-kaart neemt de hele rij waarin hij stond; de kaart die ernaast stond schuift een rij omlaag.
+  const expandedKpiIndex = statisticsKpis.findIndex((kpi) => kpi.key === activeStatsKpi);
+  const orderedStatisticsKpis = expandedKpiIndex === -1
+    ? statisticsKpis
+    : (() => {
+      const others = statisticsKpis.filter((_, index) => index !== expandedKpiIndex);
+      const rowStart = expandedKpiIndex - (expandedKpiIndex % 2);
+      return [...others.slice(0, rowStart), statisticsKpis[expandedKpiIndex], ...others.slice(rowStart)];
+    })();
 
-  // Achter elke KPI-tegel zit een popup: drie ranglijsten en een histogram van de opwaarderingen.
+  // Achter elke KPI-tegel zit een uitklapbare ranglijst (of bij het gemiddelde een histogram) van de opwaarderingen.
   const statisticsDetails = useMemo(() => {
     const positiveTransactions = statsTransactions.filter((t) => t.amount_change > 0);
     const perUser = new Map<string, { count: number; total: number; largest: number }>();
@@ -1943,7 +1980,7 @@ export default function SaldoTrackerApp() {
       goalsPerUser.set(row.user_id, (goalsPerUser.get(row.user_id) ?? 0) + row.goals);
     }
     return users
-      .map((user) => ({ userId: user.id, name: user.name, goals: goalsPerUser.get(user.id) ?? 0 }))
+      .map((user) => ({ userId: user.id, user, name: user.name, goals: goalsPerUser.get(user.id) ?? 0 }))
       .filter((scorer) => scorer.goals > 0)
       .sort((a, b) => b.goals - a.goals || a.name.localeCompare(b.name));
   }, [activeStatsSeason, playerGoals, users]);
@@ -2216,12 +2253,6 @@ export default function SaldoTrackerApp() {
     setProfileChartRange("alles");
     setIsProfilePhotoOpen(false);
     setSelectedProfile({ userId, openedAt: new Date().getTime() });
-  };
-
-  // Vanuit een ranglijst: eerst de statistiekpopup dicht.
-  const openUserProfileFromStats = (userId: string) => {
-    setActiveStatsKpi(null);
-    openUserProfile(userId);
   };
 
   const startEditingUsername = () => {
@@ -4154,47 +4185,133 @@ export default function SaldoTrackerApp() {
                         {topScorersMessage ? <p className="mt-2 text-xs text-slate-500">{topScorersMessage}</p> : null}
                       </div>
                     ) : topScorersView !== "dicht" ? (
-                      <div className="space-y-1.5 border-t border-slate-100 px-3 pb-2.5 pt-2">
+                      <div className="border-t border-slate-100 px-3">
                         {topScorers.length === 0 ? (
-                          <p className="text-sm text-slate-500">Nog geen doelpunten.</p>
+                          <p className="py-2.5 text-sm text-slate-500">Nog geen doelpunten.</p>
                         ) : (
-                          topScorers.map((scorer) => (
-                            <div key={scorer.userId} className="flex items-center gap-2 text-sm">
-                              {/* Gelijke aantallen delen een plek: 1, 1, 3. */}
-                              <span className="w-5 shrink-0 tabular-nums text-slate-400">{topScorers.findIndex((s) => s.goals === scorer.goals) + 1}.</span>
-                              <span className="min-w-0 flex-1 truncate text-slate-600">{scorer.name}</span>
-                              <span className="font-medium tabular-nums text-slate-900">{scorer.goals}</span>
-                            </div>
-                          ))
+                          // Iedereen met minstens één goal; gelijke aantallen delen een plek: 1, 1, 3.
+                          <RankingList
+                            entries={topScorers.map((scorer) => ({
+                              userId: scorer.userId,
+                              rank: topScorers.findIndex((s) => s.goals === scorer.goals) + 1,
+                              name: scorer.name,
+                              avatar: getAvatarForUser(scorer.user),
+                              value: String(scorer.goals),
+                            }))}
+                            onSelect={openUserProfile}
+                          />
                         )}
                       </div>
                     ) : null}
                   </div>
 
+                  {/* Een tik op een kaart klapt hem open over de volle breedte, met eronder de top 5 (bij het gemiddelde
+                      het histogram); nog een tik klapt hem dicht. layout laat de kaarten naar hun nieuwe plek schuiven,
+                      layout="position" op de inhoud voorkomt dat de tekst meerekt terwijl de kaart van maat verandert.
+                      De hoekafronding staat in style, zodat framer-motion hem tijdens het schuiven rond houdt. */}
                   <div className="grid grid-cols-2 gap-3">
-                    {statisticsKpis.map((kpi) => {
+                    {orderedStatisticsKpis.map((kpi) => {
                       const { icon: KpiIcon, tileClassName } = statsKpiStyles[kpi.key];
+                      const isExpanded = kpi.key === activeStatsKpi;
                       return (
-                        <button
+                        <motion.div
                           key={kpi.key}
-                          type="button"
-                          onClick={() => setActiveStatsKpi(kpi.key)}
-                          className="relative rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.98]"
+                          layout
+                          transition={statsLayoutTransition}
+                          style={{ borderRadius: 14 }}
+                          className={`overflow-hidden bg-white shadow-sm ${isExpanded ? "col-span-2" : ""}`}
                         >
-                          <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500">
-                            <ArrowUpRight className="h-3.5 w-3.5" />
-                          </span>
-                          <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${tileClassName}`}>
-                            <KpiIcon className="h-[18px] w-[18px]" />
-                          </span>
-                          <p className="mt-2.5 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
-                          <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
-                        </button>
+                          <motion.button
+                            layout="position"
+                            transition={statsLayoutTransition}
+                            type="button"
+                            onClick={() => setActiveStatsKpi(isExpanded ? null : kpi.key)}
+                            aria-expanded={isExpanded}
+                            className="relative block w-full p-4 text-left transition-colors hover:bg-slate-50"
+                          >
+                            {isExpanded ? (
+                              <span className="absolute right-4 top-3.5 text-sm font-medium text-slate-900">Sluiten</span>
+                            ) : (
+                              <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500">
+                                <ArrowUpRight className="h-3.5 w-3.5" />
+                              </span>
+                            )}
+                            <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${tileClassName}`}>
+                              <KpiIcon className="h-[18px] w-[18px]" />
+                            </span>
+                            <p className="mt-2.5 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
+                            <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
+                          </motion.button>
+                          {isExpanded ? (
+                            <motion.div
+                              layout="position"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              transition={{ opacity: { duration: 0.2, delay: 0.12 }, layout: statsLayoutTransition }}
+                              className="border-t border-slate-100 px-4 pb-2 pt-3"
+                            >
+                              <p className="text-xs text-slate-500">{statsKpiDescriptions[kpi.key]}</p>
+                              {kpi.key === "average" ? (
+                                statisticsDetails.histogram.length === 0 ? (
+                                  <p className="py-2.5 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                                ) : (
+                                  <div className="pb-2 pt-4">
+                                    <div className="flex h-44 items-end gap-1.5">
+                                      {statisticsDetails.histogram.map((bucket, index) => {
+                                        const isAverageBucket = index === statisticsDetails.averageBucketIndex;
+                                        const heightPercent = (bucket.count / statisticsDetails.histogramMax) * 100;
+                                        return (
+                                          <div key={bucket.from} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
+                                            <span className={`text-[11px] font-semibold tabular-nums ${isAverageBucket ? "text-slate-900" : "text-slate-500"}`}>{bucket.count}</span>
+                                            <motion.div
+                                              initial={{ height: 0 }}
+                                              animate={{ height: `${Math.max(heightPercent, 3)}%` }}
+                                              transition={{ duration: 0.45, delay: index * 0.04 }}
+                                              className={`w-full rounded-md ${isAverageBucket ? "bg-violet-500" : "bg-surface"}`}
+                                            />
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                    <div className="mt-2 flex gap-1.5 border-t border-slate-100 pt-2">
+                                      {statisticsDetails.histogram.map((bucket, index) => {
+                                        const isAverageBucket = index === statisticsDetails.averageBucketIndex;
+                                        // Meer dan acht kolommen passen niet allemaal met een label op een telefoon: om en om overslaan.
+                                        const showLabel = statisticsDetails.histogram.length <= 8 || index % 2 === 0 || isAverageBucket;
+                                        return (
+                                          <span key={bucket.from} className={`min-w-0 flex-1 whitespace-nowrap text-center text-[9px] tabular-nums leading-none ${isAverageBucket ? "font-semibold text-slate-900" : "text-slate-500"}`}>
+                                            {showLabel ? bucket.from : ""}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                    <p className="mt-3 text-center text-xs text-slate-500">
+                                      Elke kolom is een bucket van {euro(statisticsDetails.bucketSize)}, het label is de ondergrens. De paarse kolom bevat het gemiddelde van {euro(statistics.averageTopUp)}.
+                                    </p>
+                                  </div>
+                                )
+                              ) : statsKpiRanking.length === 0 ? (
+                                <p className="py-2.5 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
+                              ) : (
+                                <RankingList
+                                  entries={statsKpiRanking.map((row, index) => ({
+                                    userId: row.userId,
+                                    rank: index + 1,
+                                    name: row.name,
+                                    avatar: row.user ? getAvatarForUser(row.user) : "",
+                                    value: kpi.key === "count" ? `${row.count}×` : kpi.key === "total" ? euro(row.total) : euro(row.largest),
+                                  }))}
+                                  onSelect={openUserProfile}
+                                />
+                              )}
+                            </motion.div>
+                          ) : null}
+                        </motion.div>
                       );
                     })}
                   </div>
 
-                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                  <motion.div layout="position" transition={statsLayoutTransition} className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5">
                         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
@@ -4214,7 +4331,7 @@ export default function SaldoTrackerApp() {
                             <Fragment key={spender.userId}>
                               <button
                                 type="button"
-                                onClick={() => openUserProfileFromStats(spender.userId)}
+                                onClick={() => openUserProfile(spender.userId)}
                                 className="max-w-[7rem] truncate text-left text-xs font-medium text-slate-700 transition hover:text-slate-900"
                               >
                                 {spender.username}
@@ -4224,7 +4341,7 @@ export default function SaldoTrackerApp() {
                                   initial={{ width: 0 }}
                                   animate={{ width: `${widthPercent}%` }}
                                   transition={{ duration: 0.5, delay: index * 0.03 }}
-                                  className={`h-full rounded-full ${index === 0 ? "bg-slate-900" : "bg-slate-700"}`}
+                                  className="h-full rounded-full bg-slate-700"
                                 />
                               </div>
                               <span className="text-right text-xs font-semibold tabular-nums text-slate-900">{euro(spender.total)}</span>
@@ -4233,9 +4350,9 @@ export default function SaldoTrackerApp() {
                         })}
                       </div>
                     )}
-                  </div>
+                  </motion.div>
 
-                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                  <motion.div layout="position" transition={statsLayoutTransition} className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="flex items-center gap-2.5">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
                         <ArrowDownLeft className="h-4 w-4" />
@@ -4274,9 +4391,9 @@ export default function SaldoTrackerApp() {
                         })}
                       </div>
                     )}
-                  </div>
+                  </motion.div>
 
-                  <div className="rounded-xl bg-white p-4 shadow-sm">
+                  <motion.div layout="position" transition={statsLayoutTransition} className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="flex items-center gap-2.5">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
                         <ArrowUpRight className="h-4 w-4" />
@@ -4315,7 +4432,7 @@ export default function SaldoTrackerApp() {
                         })}
                       </div>
                     )}
-                  </div>
+                  </motion.div>
                 </motion.div>
                 {devUsageSection}
               </>
@@ -5044,96 +5161,6 @@ export default function SaldoTrackerApp() {
           </motion.div>
         ) : null}
       </AnimatePresence>
-
-      {activeStatsKpi ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center" onClick={() => setActiveStatsKpi(null)}>
-          <motion.div
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2 }}
-            className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">{statsKpiDetailTitles[activeStatsKpi].title}</h2>
-                <p className="mt-0.5 text-sm text-slate-500">{statsKpiDetailTitles[activeStatsKpi].description}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveStatsKpi(null)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200"
-                aria-label="Sluiten"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {activeStatsKpi === "average" ? (
-              statisticsDetails.histogram.length === 0 ? (
-                <p className="mt-4 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
-              ) : (
-                <div className="mt-5">
-                  <div className="flex h-44 items-end gap-1.5">
-                    {statisticsDetails.histogram.map((bucket, index) => {
-                      const isAverageBucket = index === statisticsDetails.averageBucketIndex;
-                      const heightPercent = (bucket.count / statisticsDetails.histogramMax) * 100;
-                      return (
-                        <div key={bucket.from} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
-                          <span className={`text-[11px] font-semibold tabular-nums ${isAverageBucket ? "text-slate-900" : "text-slate-500"}`}>{bucket.count}</span>
-                          <motion.div
-                            initial={{ height: 0 }}
-                            animate={{ height: `${Math.max(heightPercent, 3)}%` }}
-                            transition={{ duration: 0.45, delay: index * 0.04 }}
-                            className={`w-full rounded-md ${isAverageBucket ? "bg-violet-500" : "bg-surface"}`}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-2 flex gap-1.5 border-t border-slate-100 pt-2">
-                    {statisticsDetails.histogram.map((bucket, index) => {
-                      const isAverageBucket = index === statisticsDetails.averageBucketIndex;
-                      // Meer dan acht kolommen passen niet allemaal met een label op een telefoon: om en om overslaan.
-                      const showLabel = statisticsDetails.histogram.length <= 8 || index % 2 === 0 || isAverageBucket;
-                      return (
-                        <span key={bucket.from} className={`min-w-0 flex-1 whitespace-nowrap text-center text-[9px] tabular-nums leading-none ${isAverageBucket ? "font-semibold text-slate-900" : "text-slate-500"}`}>
-                          {showLabel ? bucket.from : ""}
-                        </span>
-                      );
-                    })}
-                  </div>
-                  <p className="mt-3 text-center text-xs text-slate-500">
-                    Elke kolom is een bucket van {euro(statisticsDetails.bucketSize)}, het label is de ondergrens. De paarse kolom bevat het gemiddelde van {euro(statistics.averageTopUp)}.
-                  </p>
-                </div>
-              )
-            ) : (
-              <div className="mt-4 space-y-2">
-                {statsKpiRanking.length === 0 ? (
-                  <p className="text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
-                ) : (
-                  statsKpiRanking.map((row, index) => (
-                    <button
-                      key={row.userId}
-                      type="button"
-                      onClick={() => openUserProfileFromStats(row.userId)}
-                      className="flex w-full items-center gap-3 rounded-lg bg-surface px-3 py-2.5 text-left transition hover:bg-slate-200"
-                    >
-                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${statsKpiStyles[activeStatsKpi].tileClassName}`}>{index + 1}</span>
-                      <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-9 w-9 shrink-0" />
-                      <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{row.name}</p>
-                      <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
-                        {activeStatsKpi === "count" ? `${row.count}×` : activeStatsKpi === "total" ? euro(row.total) : euro(row.largest)}
-                      </p>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </motion.div>
-        </div>
-      ) : null}
 
       {isProfilePageOpen ? null : (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
