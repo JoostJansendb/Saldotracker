@@ -220,24 +220,27 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-// Een korte, lichte tik op de telefoon. Android kent navigator.vibrate; Safari op iOS niet, maar sinds iOS 18
-// geeft een <input type="checkbox" switch> een systeemtik als hij omgaat, dus zetten we er via een onzichtbaar
-// label even een om. Op iOS werkt dat alleen kort na een aanraking; op een computer gebeurt er niets.
+// Een korte, lichte tik op Android. Safari op iOS kent navigator.vibrate niet; daar zorgt HapticOverlay voor de tik.
 function triggerHaptic() {
-  if (typeof navigator.vibrate === "function") {
-    navigator.vibrate(10);
-    return;
-  }
-  const label = document.createElement("label");
-  label.ariaHidden = "true";
-  label.style.display = "none";
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.setAttribute("switch", "");
-  label.appendChild(input);
-  document.head.appendChild(label);
-  label.click();
-  label.remove();
+  if (typeof navigator.vibrate === "function") navigator.vibrate(15);
+}
+
+// Safari op iOS tikt als een <input type="checkbox" switch> omgaat, maar sinds iOS 26.5 alleen als de vinger zelf
+// op een label met zo'n schakelaar landt; een klik vanuit code telt niet meer. Dit label ligt daarom onzichtbaar
+// over de hele knop, die relative moet zijn. De tik loopt gewoon door naar de knop; de klik die Safari daarna naar
+// de schakelaar stuurt, houden we tegen, anders kreeg de knop hem twee keer. Slepen geeft op iOS dus geen tik.
+function HapticOverlay() {
+  return (
+    <label aria-hidden="true" className="absolute inset-0 rounded-[inherit] [-webkit-tap-highlight-color:transparent]">
+      <input
+        ref={(input) => input?.setAttribute("switch", "")}
+        type="checkbox"
+        tabIndex={-1}
+        className="hidden"
+        onClick={(event) => event.stopPropagation()}
+      />
+    </label>
+  );
 }
 
 const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.local";
@@ -703,11 +706,13 @@ function SegmentedControl<T extends string>({ options, value, onChange, label }:
           <button
             key={option.value}
             type="button"
-            onClick={() => { if (!isActive) triggerHaptic(); onChange(option.value); }}
+            onClick={() => { triggerHaptic(); onChange(option.value); }}
             aria-pressed={isActive}
-            className={`h-10 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
+            className={`relative h-10 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
           >
             {option.label}
+            {/* Op elke optie, ook de actieve: verdwijnt het label bij het omschakelen, dan tikt iOS mogelijk niet. */}
+            <HapticOverlay />
           </button>
         );
       })}
@@ -2200,9 +2205,9 @@ export default function SaldoTrackerApp() {
     }
   };
 
-  // De tabs onderin: een tikje als je naar een andere tab gaat.
+  // De tabs onderin: een tikje bij elke tik, net als op iOS, waar HapticOverlay op elke tab ligt.
   const switchMainTab = (tab: typeof activeMainTab) => {
-    if (tab !== activeMainTab) triggerHaptic();
+    triggerHaptic();
     setActiveMainTab(tab);
   };
 
@@ -5133,16 +5138,18 @@ export default function SaldoTrackerApp() {
       {isProfilePageOpen ? null : (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
         <div className="mx-auto grid w-full max-w-sm grid-cols-4 px-6 py-3">
-          <button onClick={() => switchMainTab("saldo")} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => switchMainTab("saldo")} className="relative flex w-full flex-col items-center justify-center">
             <Wallet className={`transition ${activeMainTab === "saldo" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "saldo" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Saldo</span>
+            <HapticOverlay />
           </button>
-          <button onClick={() => switchMainTab("rijschema")} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => switchMainTab("rijschema")} className="relative flex w-full flex-col items-center justify-center">
             <CalendarDays className={`transition ${activeMainTab === "rijschema" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "rijschema" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Schema</span>
+            <HapticOverlay />
           </button>
           {/* Nog een keer op Potjes tikken brengt je vanuit een potje terug naar de lijst. */}
-          <button onClick={() => { if (activeMainTab === "potjes") closePot(); switchMainTab("potjes"); }} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => { if (activeMainTab === "potjes") closePot(); switchMainTab("potjes"); }} className="relative flex w-full flex-col items-center justify-center">
             <span className="relative">
               <PiggyBank className={`transition ${activeMainTab === "potjes" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
               {openPotReminders.length > 0 ? (
@@ -5150,10 +5157,12 @@ export default function SaldoTrackerApp() {
               ) : null}
             </span>
             <span className={`mt-1 text-xs ${activeMainTab === "potjes" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Potjes</span>
+            <HapticOverlay />
           </button>
-          <button onClick={() => switchMainTab("statistieken")} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => switchMainTab("statistieken")} className="relative flex w-full flex-col items-center justify-center">
             <BarChart3 className={`transition ${activeMainTab === "statistieken" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "statistieken" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Statistieken</span>
+            <HapticOverlay />
           </button>
         </div>
       </div>
