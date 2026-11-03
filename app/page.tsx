@@ -220,6 +220,26 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+// Een korte, lichte tik op de telefoon. Android kent navigator.vibrate; Safari op iOS niet, maar sinds iOS 18
+// geeft een <input type="checkbox" switch> een systeemtik als hij omgaat, dus zetten we er via een onzichtbaar
+// label even een om. Op iOS werkt dat alleen kort na een aanraking; op een computer gebeurt er niets.
+function triggerHaptic() {
+  if (typeof navigator.vibrate === "function") {
+    navigator.vibrate(10);
+    return;
+  }
+  const label = document.createElement("label");
+  label.ariaHidden = "true";
+  label.style.display = "none";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.setAttribute("switch", "");
+  label.appendChild(input);
+  document.head.appendChild(label);
+  label.click();
+  label.remove();
+}
+
 const authEmailDomain = process.env.NEXT_PUBLIC_AUTH_EMAIL_DOMAIN ?? "saldo.local";
 const avatarBucket = process.env.NEXT_PUBLIC_SUPABASE_AVATAR_BUCKET ?? "avatars";
 const pullRefreshMinimumDurationMs = 650;
@@ -683,7 +703,7 @@ function SegmentedControl<T extends string>({ options, value, onChange, label }:
           <button
             key={option.value}
             type="button"
-            onClick={() => onChange(option.value)}
+            onClick={() => { if (!isActive) triggerHaptic(); onChange(option.value); }}
             aria-pressed={isActive}
             className={`h-10 rounded-lg text-sm font-medium transition ${isActive ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
           >
@@ -886,8 +906,13 @@ const SaldoLineChart = React.memo(function SaldoLineChart({ points }: {
   // "nu" telt daarbij niet mee, want daar veranderde niets; rechts geldt dus de laatste transactie.
   const fraction = sliderValue / chartSliderSteps;
   const scrubX = fraction * width;
-  let scrubIndex = 0;
-  while (scrubIndex < segmentCount - 1 && coordinates[scrubIndex + 1].x <= scrubX) scrubIndex += 1;
+  const pointIndexAt = (value: number) => {
+    const x = (value / chartSliderSteps) * width;
+    let index = 0;
+    while (index < segmentCount - 1 && coordinates[index + 1].x <= x) index += 1;
+    return index;
+  };
+  const scrubIndex = pointIndexAt(sliderValue);
   const scrubPoint = points[scrubIndex];
   const scrubLabel = `${euro(scrubPoint.balance)} · ${scrubPoint.changedAt === null ? "beginsaldo" : chartDateFormatter.format(new Date(scrubPoint.changedAt))}`;
 
@@ -928,7 +953,12 @@ const SaldoLineChart = React.memo(function SaldoLineChart({ points }: {
         min={0}
         max={chartSliderSteps}
         value={sliderValue}
-        onChange={(event) => setSliderValue(Number(event.target.value))}
+        onChange={(event) => {
+          const nextValue = Number(event.target.value);
+          // Een tikje telkens als het bolletje naar een andere transactie springt, zoals een draaiwieltje.
+          if (pointIndexAt(nextValue) !== scrubIndex) triggerHaptic();
+          setSliderValue(nextValue);
+        }}
         aria-label="Saldo op een datum"
         aria-valuetext={scrubLabel}
         className={`mt-2 ${chartSliderClassName}`}
@@ -1326,6 +1356,7 @@ export default function SaldoTrackerApp() {
       if (!isPullingRef.current || !isLoggedInRef.current) return;
       const pullDistance = e.changedTouches[0].clientY - touchStartYRef.current;
       if (pullDistance > 80) {
+        triggerHaptic();
         setIsPullRefreshing(true);
         await Promise.all([
           refreshUsers({ force: true }),
@@ -2167,6 +2198,12 @@ export default function SaldoTrackerApp() {
       console.error("Fout tijdens inloggen:", loginFlowError);
       setError("Inloggen mislukt door een onverwachte fout. Probeer opnieuw.");
     }
+  };
+
+  // De tabs onderin: een tikje als je naar een andere tab gaat.
+  const switchMainTab = (tab: typeof activeMainTab) => {
+    if (tab !== activeMainTab) triggerHaptic();
+    setActiveMainTab(tab);
   };
 
   // Elk profiel opent met de grafiek op "Alles" en de foto klein.
@@ -5096,16 +5133,16 @@ export default function SaldoTrackerApp() {
       {isProfilePageOpen ? null : (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
         <div className="mx-auto grid w-full max-w-sm grid-cols-4 px-6 py-3">
-          <button onClick={() => setActiveMainTab("saldo")} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => switchMainTab("saldo")} className="flex w-full flex-col items-center justify-center">
             <Wallet className={`transition ${activeMainTab === "saldo" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "saldo" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Saldo</span>
           </button>
-          <button onClick={() => setActiveMainTab("rijschema")} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => switchMainTab("rijschema")} className="flex w-full flex-col items-center justify-center">
             <CalendarDays className={`transition ${activeMainTab === "rijschema" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "rijschema" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Schema</span>
           </button>
           {/* Nog een keer op Potjes tikken brengt je vanuit een potje terug naar de lijst. */}
-          <button onClick={() => { if (activeMainTab === "potjes") closePot(); setActiveMainTab("potjes"); }} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => { if (activeMainTab === "potjes") closePot(); switchMainTab("potjes"); }} className="flex w-full flex-col items-center justify-center">
             <span className="relative">
               <PiggyBank className={`transition ${activeMainTab === "potjes" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
               {openPotReminders.length > 0 ? (
@@ -5114,7 +5151,7 @@ export default function SaldoTrackerApp() {
             </span>
             <span className={`mt-1 text-xs ${activeMainTab === "potjes" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Potjes</span>
           </button>
-          <button onClick={() => setActiveMainTab("statistieken")} className="flex w-full flex-col items-center justify-center">
+          <button onClick={() => switchMainTab("statistieken")} className="flex w-full flex-col items-center justify-center">
             <BarChart3 className={`transition ${activeMainTab === "statistieken" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />
             <span className={`mt-1 text-xs ${activeMainTab === "statistieken" ? "text-slate-900 font-medium" : "text-slate-400"}`}>Statistieken</span>
           </button>
