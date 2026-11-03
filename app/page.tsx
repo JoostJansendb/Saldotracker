@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy, Moon, Target } from "lucide-react";
-import { motion } from "framer-motion";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy, Moon, Target, Repeat } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 
 type User = {
   id: string;
@@ -173,14 +173,6 @@ function getRideScheduleDateParts(matchDate: string) {
   return { day: day ? String(Number(day)) : matchDate, month: shortMonths[Number(month) - 1] ?? "" };
 }
 
-// Zowel het rijschema als de materiaalsletjes noemen mensen bij voornaam.
-function isCurrentUserNamed(name: string, user: User | null) {
-  if (!user) return false;
-  const normalize = (value: string) => value.trim().toLowerCase();
-  const listedName = normalize(name);
-  const fullName = normalize(user.name);
-  return listedName === normalize(user.username) || listedName === fullName || listedName === fullName.split(" ")[0];
-}
 
 function formatDate(dateString: string) {
   const date = new Date(dateString);
@@ -241,6 +233,14 @@ const statsKpiDetailTitles: Record<StatsKpiKey, { title: string; description: st
   total: { title: "Meest opgewaardeerd", description: "Top 5 op totaal opgewaardeerd bedrag." },
   average: { title: "Verdeling van opwaarderingen", description: "Hoe vaak elk bedrag is opgewaardeerd." },
   largest: { title: "Grootste opwaardeerders", description: "Top 5 op grootste losse opwaardering." },
+};
+
+// Elke KPI-tegel een eigen tintje, uit dezelfde reeks als de tegels op een spelersprofiel; de popup erachter neemt het over.
+const statsKpiStyles: Record<StatsKpiKey, { icon: typeof Users; tileClassName: string }> = {
+  count: { icon: Repeat, tileClassName: "bg-blue-50 text-blue-700" },
+  total: { icon: Wallet, tileClassName: "bg-emerald-50 text-emerald-700" },
+  average: { icon: BarChart3, tileClassName: "bg-violet-50 text-violet-700" },
+  largest: { icon: Trophy, tileClassName: "bg-amber-50 text-amber-700" },
 };
 
 const transactionDirectionOptions: Array<{ value: TransactionDirection; label: string }> = [
@@ -786,12 +786,12 @@ const UsageLineChart = React.memo(function UsageLineChart({
             return <text key={tick} x={paddingX - 10} y={y + 7} textAnchor="end" fontSize="18" className="fill-slate-900">{tick}</text>;
           })}
 
-          <path d={areaPath} className="fill-slate-700/20" />
-          <path d={path} fill="none" className="stroke-slate-700" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+          <path d={areaPath} className="fill-slate-900/10" />
+          <path d={path} fill="none" className="stroke-slate-900" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
 
           {pointCoordinates.map((point) => (
             <g key={point.key}>
-              <circle cx={point.x} cy={point.y} r="4.5" className="fill-slate-700" />
+              <circle cx={point.x} cy={point.y} r="4.5" className="fill-slate-900" />
               <circle cx={point.x} cy={point.y} r="9" fill="transparent">
                 <title>{`${point.label}: ${point.value}`}</title>
               </circle>
@@ -961,6 +961,7 @@ export default function SaldoTrackerApp() {
   // openedAt is het "nu" van de saldografiek, vastgelegd bij het openen.
   const [selectedProfile, setSelectedProfile] = useState<{ userId: string; openedAt: number } | null>(null);
   const [profileChartRange, setProfileChartRange] = useState<SaldoChartRange>("alles");
+  const [isProfilePhotoOpen, setIsProfilePhotoOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -2168,9 +2169,10 @@ export default function SaldoTrackerApp() {
     }
   };
 
-  // Elk profiel opent met de grafiek op "Alles".
+  // Elk profiel opent met de grafiek op "Alles" en de foto klein.
   const openUserProfile = (userId: string) => {
     setProfileChartRange("alles");
+    setIsProfilePhotoOpen(false);
     setSelectedProfile({ userId, openedAt: new Date().getTime() });
   };
 
@@ -3562,13 +3564,9 @@ export default function SaldoTrackerApp() {
                         {rideSchedule.map((match) => {
                           const isAway = match.location === "uit";
                           const { day, month } = getRideScheduleDateParts(match.match_date);
-                          const isUserRiding = match.riders.some((rider) => isCurrentUserNamed(rider, currentUser));
 
                           return (
-                            <div
-                              key={match.id}
-                              className={`flex items-center gap-2.5 py-2 ${isUserRiding ? "my-1 rounded-lg bg-slate-900/5 px-2" : "px-1"}`}
-                            >
+                            <div key={match.id} className="flex items-center gap-2.5 px-1 py-2">
                               <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isAway ? "bg-slate-900 text-white" : "bg-surface text-slate-600"}`}>
                                 <div className="text-[13px] font-semibold leading-none">{day}</div>
                                 <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{month}</div>
@@ -3610,13 +3608,9 @@ export default function SaldoTrackerApp() {
                       <div className="divide-y divide-slate-100 rounded-xl bg-white px-2 shadow-sm">
                         {materialDuty.map((duty) => {
                           const isCurrentMonth = duty.season === currentMaterialDutyMonth.season && duty.month === currentMaterialDutyMonth.month;
-                          const isUserOnDuty = duty.persons.some((person) => isCurrentUserNamed(person, currentUser));
 
                           return (
-                            <div
-                              key={`${duty.season}-${duty.month}`}
-                              className={`flex items-center gap-2.5 py-2 ${isUserOnDuty ? "my-1 rounded-lg bg-slate-900/5 px-2" : "px-1"}`}
-                            >
+                            <div key={`${duty.season}-${duty.month}`} className="flex items-center gap-2.5 px-1 py-2">
                               <div className={`w-9 shrink-0 rounded-lg py-1 text-center ${isCurrentMonth ? "bg-slate-900 text-white" : "bg-surface text-slate-600"}`}>
                                 <div className="text-[13px] font-semibold leading-none">{shortMonths[duty.month - 1] ?? ""}</div>
                                 <div className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{getMaterialDutyYear(duty.season, duty.month).slice(-2)}</div>
@@ -4069,8 +4063,11 @@ export default function SaldoTrackerApp() {
                         type="button"
                         onClick={() => setTopScorersView((prev) => (prev === "dicht" ? "open" : "dicht"))}
                         aria-expanded={topScorersView !== "dicht"}
-                        className="flex flex-1 items-center gap-2 px-3 py-2.5 text-left"
+                        className="flex flex-1 items-center gap-2.5 px-3 py-2.5 text-left"
                       >
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                          <Target className="h-4 w-4" />
+                        </span>
                         <span className="flex-1 text-sm font-semibold text-slate-900">Topscoorders</span>
                         <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${topScorersView !== "dicht" ? "rotate-90" : ""}`} />
                       </button>
@@ -4133,25 +4130,36 @@ export default function SaldoTrackerApp() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
-                    {statisticsKpis.map((kpi) => (
-                      <button
-                        key={kpi.key}
-                        type="button"
-                        onClick={() => setActiveStatsKpi(kpi.key)}
-                        className="relative rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.98]"
-                      >
-                        <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500">
-                          <ArrowUpRight className="h-3.5 w-3.5" />
-                        </span>
-                        <p className="pr-8 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
-                        <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
-                      </button>
-                    ))}
+                    {statisticsKpis.map((kpi) => {
+                      const { icon: KpiIcon, tileClassName } = statsKpiStyles[kpi.key];
+                      return (
+                        <button
+                          key={kpi.key}
+                          type="button"
+                          onClick={() => setActiveStatsKpi(kpi.key)}
+                          className="relative rounded-xl bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 active:scale-[0.98]"
+                        >
+                          <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500">
+                            <ArrowUpRight className="h-3.5 w-3.5" />
+                          </span>
+                          <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${tileClassName}`}>
+                            <KpiIcon className="h-[18px] w-[18px]" />
+                          </span>
+                          <p className="mt-2.5 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
+                          <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
+                        </button>
+                      );
+                    })}
                   </div>
 
                   <div className="rounded-xl bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-base font-semibold text-slate-900">Kas-kanonnen</h3>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+                          <Wallet className="h-4 w-4" />
+                        </span>
+                        <h3 className="text-base font-semibold text-slate-900">Kas-kanonnen</h3>
+                      </div>
                       <span className="text-xs text-slate-500">Totaal opgewaardeerd</span>
                     </div>
                     {spenderChartData.length === 0 ? (
@@ -4174,7 +4182,7 @@ export default function SaldoTrackerApp() {
                                   initial={{ width: 0 }}
                                   animate={{ width: `${widthPercent}%` }}
                                   transition={{ duration: 0.5, delay: index * 0.03 }}
-                                  className={`h-full rounded-full ${index === 0 ? "bg-slate-900" : "bg-slate-300"}`}
+                                  className={`h-full rounded-full ${index === 0 ? "bg-slate-900" : "bg-slate-700"}`}
                                 />
                               </div>
                               <span className="text-right text-xs font-semibold tabular-nums text-slate-900">{euro(spender.total)}</span>
@@ -4186,7 +4194,12 @@ export default function SaldoTrackerApp() {
                   </div>
 
                   <div className="rounded-xl bg-white p-4 shadow-sm">
-                    <h3 className="text-base font-semibold text-slate-900">Opwaarderingen per maand</h3>
+                    <div className="flex items-center gap-2.5">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+                        <ArrowDownLeft className="h-4 w-4" />
+                      </span>
+                      <h3 className="text-base font-semibold text-slate-900">Opwaarderingen per maand</h3>
+                    </div>
                     {statistics.monthlyTotals.length === 0 ? (
                       <p className="mt-3 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                     ) : (
@@ -4222,7 +4235,12 @@ export default function SaldoTrackerApp() {
                   </div>
 
                   <div className="rounded-xl bg-white p-4 shadow-sm">
-                    <h3 className="text-base font-semibold text-slate-900">Uitgaven per datum</h3>
+                    <div className="flex items-center gap-2.5">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
+                        <ArrowUpRight className="h-4 w-4" />
+                      </span>
+                      <h3 className="text-base font-semibold text-slate-900">Uitgaven per datum</h3>
+                    </div>
                     {statistics.dailyExpenses.length === 0 ? (
                       <p className="mt-3 text-sm text-slate-500">Nog geen uitgaven beschikbaar.</p>
                     ) : (
@@ -4831,7 +4849,20 @@ export default function SaldoTrackerApp() {
             </div>
 
             <div className="-mt-2 text-center">
-              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-24 w-24 ring-4 ring-white" fallbackClassName="text-2xl" />
+              {/* Tikken op de foto vergroot hem. Zolang hij groot is, houdt een lege plek de ruimte vast, zodat de
+                  pagina niet verspringt; de foto zelf vliegt via layoutId naar het midden en weer terug. */}
+              <button
+                type="button"
+                onClick={() => setIsProfilePhotoOpen(true)}
+                className="mx-auto block h-24 w-24 rounded-full"
+                aria-label={`Profielfoto van ${selectedUser.name} vergroten`}
+              >
+                {isProfilePhotoOpen ? null : (
+                  <motion.div layoutId="profile-photo" className="h-24 w-24 rounded-full" style={{ borderRadius: "50%" }}>
+                    <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="h-full w-full ring-4 ring-white" fallbackClassName="text-2xl" />
+                  </motion.div>
+                )}
+              </button>
               <p className="mt-3 text-xl font-semibold text-slate-900">{selectedUser.name}</p>
               <p className="text-sm text-slate-500">@{selectedUser.username}</p>
             </div>
@@ -4933,6 +4964,45 @@ export default function SaldoTrackerApp() {
         </div>
       ) : null}
 
+      {/* De vergrote profielfoto: de achtergrond wordt donker, ergens tikken maakt hem weer klein. */}
+      <AnimatePresence>
+        {selectedUser && isProfilePhotoOpen ? (
+          <motion.div
+            key="profile-photo"
+            role="dialog"
+            aria-label={`Profielfoto van ${selectedUser.name}`}
+            className="fixed inset-0 z-[60] flex items-center justify-center px-8"
+            onClick={() => setIsProfilePhotoOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25 }}
+              className="absolute inset-0 bg-black/80"
+            />
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsProfilePhotoOpen(false)}
+              className="absolute right-2 top-[env(safe-area-inset-top)] h-12 px-4 text-sm font-medium text-white/90 transition hover:text-white"
+            >
+              Sluiten
+            </motion.button>
+            <motion.div
+              layoutId="profile-photo"
+              transition={{ type: "spring", stiffness: 260, damping: 30 }}
+              className="relative aspect-square w-full max-w-sm"
+              style={{ borderRadius: "50%" }}
+            >
+              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="h-full w-full" fallbackClassName="text-6xl" />
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       {activeStatsKpi ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center" onClick={() => setActiveStatsKpi(null)}>
           <motion.div
@@ -4973,7 +5043,7 @@ export default function SaldoTrackerApp() {
                             initial={{ height: 0 }}
                             animate={{ height: `${Math.max(heightPercent, 3)}%` }}
                             transition={{ duration: 0.45, delay: index * 0.04 }}
-                            className={`w-full rounded-md ${isAverageBucket ? "bg-slate-900" : "bg-surface"}`}
+                            className={`w-full rounded-md ${isAverageBucket ? "bg-violet-500" : "bg-surface"}`}
                           />
                         </div>
                       );
@@ -4992,7 +5062,7 @@ export default function SaldoTrackerApp() {
                     })}
                   </div>
                   <p className="mt-3 text-center text-xs text-slate-500">
-                    Elke kolom is een bucket van {euro(statisticsDetails.bucketSize)}, het label is de ondergrens. De zwarte kolom bevat het gemiddelde van {euro(statistics.averageTopUp)}.
+                    Elke kolom is een bucket van {euro(statisticsDetails.bucketSize)}, het label is de ondergrens. De paarse kolom bevat het gemiddelde van {euro(statistics.averageTopUp)}.
                   </p>
                 </div>
               )
@@ -5008,7 +5078,7 @@ export default function SaldoTrackerApp() {
                       onClick={() => openUserProfileFromStats(row.userId)}
                       className="flex w-full items-center gap-3 rounded-lg bg-surface px-3 py-2.5 text-left transition hover:bg-slate-200"
                     >
-                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-600">{index + 1}</span>
+                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${statsKpiStyles[activeStatsKpi].tileClassName}`}>{index + 1}</span>
                       <UserAvatar name={row.name} avatar={row.user ? getAvatarForUser(row.user) : ""} className="h-9 w-9 shrink-0" />
                       <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">{row.name}</p>
                       <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
