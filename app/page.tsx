@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { supabase } from "@/lib/supabase";
 import { roleSwitcherName, userRoles, type UserRole } from "@/lib/roles";
 import { applyThemePreference, getServerThemePreference, getThemePreference, setThemePreference, subscribeToThemePreference, type ThemePreference } from "@/lib/theme";
@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy, Moon } from "lucide-react";
+import { LogOut, ShieldCheck, Wallet, PlusCircle, MinusCircle, CalendarDays, BarChart3, Check, Trash2, ChevronRight, ArrowLeft, Camera, KeyRound, UserPlus, UserCog, Users, ArrowLeftRight, Plus, Minus, ArrowDownLeft, ArrowUpRight, Receipt, X, Pencil, PiggyBank, Tent, Utensils, Plane, Trophy, Archive, ArchiveRestore, Settings2, Search, Copy, Moon, Target } from "lucide-react";
 import { motion } from "framer-motion";
 
 type User = {
@@ -152,6 +152,7 @@ type AppEvent = {
 type EventAggregation = "hour" | "day" | "week" | "month";
 type StatsKpiKey = "count" | "total" | "average" | "largest";
 type TransactionDirection = "alle" | "bij" | "af";
+type SaldoChartRange = "3m" | "6m" | "1j" | "alles";
 
 const homeTeamName = "HC Den Bosch H6";
 
@@ -247,6 +248,30 @@ const transactionDirectionOptions: Array<{ value: TransactionDirection; label: s
   { value: "bij", label: "Bij" },
   { value: "af", label: "Af" },
 ];
+
+// Hoe ver de saldografiek op een spelersprofiel terugkijkt, in maanden; "alles" begint bij de eerste transactie.
+const saldoChartRangeOptions: Array<{ value: SaldoChartRange; label: string; months: number | null }> = [
+  { value: "3m", label: "3M", months: 3 },
+  { value: "6m", label: "6M", months: 6 },
+  { value: "1j", label: "1J", months: 12 },
+  { value: "alles", label: "Alles", months: null },
+];
+
+const percentFormatter = new Intl.NumberFormat("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const chartDateFormatter = new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short", year: "numeric" });
+
+// De schuif onder de saldografiek: een dun spoor met een klein wit bolletje. Het bolletje is 16px, en het
+// invoerveld steekt aan beide kanten 8px uit, zodat het midden van het bolletje precies over de grafiek loopt.
+const chartSliderClassName = [
+  "-mx-2 block h-6 w-[calc(100%+1rem)] cursor-pointer appearance-none bg-transparent focus-visible:outline-none",
+  "[&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-slate-100",
+  "[&::-webkit-slider-thumb]:-mt-1.5 [&::-webkit-slider-thumb]:box-border [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-slate-300 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-sm",
+  "focus-visible:[&::-webkit-slider-thumb]:ring-2 focus-visible:[&::-webkit-slider-thumb]:ring-slate-300",
+  "[&::-moz-range-track]:h-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-slate-100",
+  "[&::-moz-range-thumb]:box-border [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border [&::-moz-range-thumb]:border-slate-300 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-sm",
+  "focus-visible:[&::-moz-range-thumb]:ring-2 focus-visible:[&::-moz-range-thumb]:ring-slate-300",
+].join(" ");
+const chartSliderSteps = 1000;
 
 const financeCategoryOptions: Array<{ value: FinanceCategory; label: string }> = [
   { value: "saldo", label: "Saldo" },
@@ -796,13 +821,146 @@ const UsageLineChart = React.memo(function UsageLineChart({
   );
 });
 
+// Het saldoverloop op een spelersprofiel, als een koersgrafiek: een vloeiende lijn door de transacties, geen assen.
+// Alleen een lichtgrijze lijn op € 0, zodat je ziet hoe ver iemand boven (of onder) nul staat.
+// Met de schuif eronder loopt een verticale lijn over de grafiek, met bovenin het saldo op dat moment en de datum
+// waarop het saldo die waarde kreeg; een bolletje op de lijn wijst die transactie aan. Standaard staat de schuif
+// helemaal rechts, op het huidige saldo.
+// changedAt is wanneer het saldo van een punt is ontstaan: leeg voor het beginsaldo van voor de eerste transactie.
+// De grafiek rekt mee met de kaart; vectorEffect houdt de lijnen toch overal even dik.
+const SaldoLineChart = React.memo(function SaldoLineChart({ points }: {
+  points: Array<{ time: number; balance: number; changedAt: number | null }>;
+}) {
+  const gradientId = useId();
+  const [sliderValue, setSliderValue] = useState(chartSliderSteps);
+  const width = 100;
+  const height = 40;
+  // Nul hoort altijd in beeld, anders valt de 0-lijn buiten de grafiek.
+  const balances = points.map((point) => point.balance);
+  const min = Math.min(0, ...balances);
+  const max = Math.max(0, ...balances);
+  // Wat lucht boven en onder, zodat de lijn niet tegen de rand van de kaart plakt.
+  const padding = (max - min) * 0.08 || 1;
+  const toY = (balance: number) => height - ((balance - min + padding) / (max - min + padding * 2)) * height;
+  const zeroY = toY(0);
+
+  // Horizontaal op tijd, maar elk stuk krijgt minstens wat breedte (hooguit 8%, en samen nooit meer dan de helft).
+  // Een uitgave vlak na een opwaardering wordt zo een bocht in plaats van een verticale streep met een hoek erboven.
+  const segmentCount = points.length - 1;
+  const span = Math.max(points[segmentCount].time - points[0].time, 1);
+  const minimumGap = Math.min(0.08, 1 / (2 * segmentCount)) * span;
+  const gaps = points.slice(1).map((point, index) => Math.max(point.time - points[index].time, minimumGap));
+  const totalGap = gaps.reduce((sum, gap) => sum + gap, 0);
+  const coordinates = [{ x: 0, y: toY(points[0].balance) }];
+  for (let index = 1; index < points.length; index += 1) {
+    coordinates.push({ x: coordinates[index - 1].x + (gaps[index - 1] / totalGap) * width, y: toY(points[index].balance) });
+  }
+  // Afrondingsfouten wegpoetsen: het laatste punt staat precies op de rechterrand, waar de schuif standaard staat.
+  coordinates[segmentCount].x = width;
+
+  // Raaklijnen volgens de monotone methode (zoals d3's curveMonotoneX): de lijn gaat door elk punt en schiet
+  // nooit boven een top of onder een dal uit. Op een top of dal loopt hij vlak, daartussen vloeit hij door.
+  const slopes = coordinates.slice(1).map((point, index) => (point.y - coordinates[index].y) / (point.x - coordinates[index].x));
+  const tangents = coordinates.map((point, index) => {
+    if (index === 0) return slopes[0];
+    if (index === coordinates.length - 1) return slopes[slopes.length - 1];
+    const before = slopes[index - 1];
+    const after = slopes[index];
+    if (before * after <= 0) return 0;
+    const widthBefore = point.x - coordinates[index - 1].x;
+    const widthAfter = coordinates[index + 1].x - point.x;
+    const weighted = (before * widthAfter + after * widthBefore) / (widthBefore + widthAfter);
+    return 2 * Math.sign(before) * Math.min(Math.abs(before), Math.abs(after), Math.abs(weighted) / 2);
+  });
+  let line = `M ${coordinates[0].x.toFixed(2)} ${coordinates[0].y.toFixed(2)}`;
+  for (let index = 0; index < coordinates.length - 1; index += 1) {
+    const current = coordinates[index];
+    const next = coordinates[index + 1];
+    const third = (next.x - current.x) / 3;
+    line += ` C ${(current.x + third).toFixed(2)} ${(current.y + tangents[index] * third).toFixed(2)},`
+      + ` ${(next.x - third).toFixed(2)} ${(next.y - tangents[index + 1] * third).toFixed(2)},`
+      + ` ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
+  }
+
+  // Het saldo verandert alleen bij een transactie: op de schuifpositie geldt het laatste punt ervoor. Het punt op
+  // "nu" telt daarbij niet mee, want daar veranderde niets; rechts geldt dus de laatste transactie.
+  const fraction = sliderValue / chartSliderSteps;
+  const scrubX = fraction * width;
+  let scrubIndex = 0;
+  while (scrubIndex < segmentCount - 1 && coordinates[scrubIndex + 1].x <= scrubX) scrubIndex += 1;
+  const scrubPoint = points[scrubIndex];
+  const scrubLabel = `${euro(scrubPoint.balance)} · ${scrubPoint.changedAt === null ? "beginsaldo" : chartDateFormatter.format(new Date(scrubPoint.changedAt))}`;
+
+  return (
+    <div>
+      {/* Links staat het label rechts van de lijn, rechts ervan, en daartussen schuift het geleidelijk mee. */}
+      <div className="relative h-5" aria-hidden="true">
+        <span
+          className="absolute top-0 whitespace-nowrap text-[11px] font-medium tabular-nums text-slate-500"
+          style={{ left: `${fraction * 100}%`, transform: `translateX(-${fraction * 100}%)` }}
+        >
+          {scrubLabel}
+        </span>
+      </div>
+      {/* Het bolletje is HTML boven op de grafiek, zodat het rond blijft terwijl de grafiek meerekt. */}
+      <div className="relative">
+        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="h-36 w-full overflow-visible text-blue-600" role="img" aria-label="Verloop van het saldo">
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="currentColor" stopOpacity={0.22} />
+              <stop offset="100%" stopColor="currentColor" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          {/* Het vlak loopt van de lijn tot de 0-lijn. */}
+          <path d={`${line} L ${width} ${zeroY.toFixed(2)} L 0 ${zeroY.toFixed(2)} Z`} fill={`url(#${gradientId})`} />
+          <line x1={0} x2={width} y1={zeroY} y2={zeroY} className="stroke-slate-200" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+          <line x1={scrubX} x2={scrubX} y1={0} y2={height} className="stroke-slate-300" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+          <path d={line} fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        </svg>
+        <span
+          aria-hidden="true"
+          className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-600"
+          style={{ left: `${coordinates[scrubIndex].x}%`, top: `${(coordinates[scrubIndex].y / height) * 100}%` }}
+        />
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={chartSliderSteps}
+        value={sliderValue}
+        onChange={(event) => setSliderValue(Number(event.target.value))}
+        aria-label="Saldo op een datum"
+        aria-valuetext={scrubLabel}
+        className={`mt-2 ${chartSliderClassName}`}
+      />
+    </div>
+  );
+});
+
+function ProfileStatTile({ icon: Icon, tileClassName, value, label }: {
+  icon: typeof Users; tileClassName: string; value: React.ReactNode; label: string;
+}) {
+  return (
+    <div className="space-y-2.5 rounded-xl bg-white p-4 shadow-sm">
+      <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${tileClassName}`}>
+        <Icon className="h-[18px] w-[18px]" />
+      </span>
+      <div>
+        <p className="text-xl font-bold tracking-tight tabular-nums text-slate-900">{value}</p>
+        <p className="mt-0.5 text-xs text-slate-500">{label}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function SaldoTrackerApp() {
   const [avatarCache, setAvatarCache] = useState<AvatarCacheMap>({});
   const [users, setUsers] = useState<User[]>([]);
   const [appEvents, setAppEvents] = useState<AppEvent[]>([]);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  // De spelerspopup toont de cijfers van één categorie: vanaf de saldotab de actieve, vanuit de statistieken altijd saldo.
-  const [selectedUserCategory, setSelectedUserCategory] = useState<FinanceCategory>("saldo");
+  // Het spelersprofiel dat open staat. Op id, zodat saldo en avatar meebewegen met de gebruikerslijst;
+  // openedAt is het "nu" van de saldografiek, vastgelegd bij het openen.
+  const [selectedProfile, setSelectedProfile] = useState<{ userId: string; openedAt: number } | null>(null);
+  const [profileChartRange, setProfileChartRange] = useState<SaldoChartRange>("alles");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -879,7 +1037,6 @@ export default function SaldoTrackerApp() {
   const [excludeJoostEvents, setExcludeJoostEvents] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const userModalRef = useRef<HTMLDivElement | null>(null);
   const refreshUsersPromiseRef = useRef<Promise<void> | null>(null);
   const avatarCacheRef = useRef<AvatarCacheMap>(avatarCache);
   const isFetchingAvatarsRef = useRef(false);
@@ -1111,14 +1268,6 @@ export default function SaldoTrackerApp() {
     if (users.length === 0) return;
     void refreshAvatarCache({ userIds: users.map((u) => u.id) });
   }, [users]);
-
-  useEffect(() => {
-    function handleClickOutsideModal(event: MouseEvent) {
-      if (userModalRef.current && !userModalRef.current.contains(event.target as Node)) setSelectedUser(null);
-    }
-    if (selectedUser) document.addEventListener("mousedown", handleClickOutsideModal);
-    return () => document.removeEventListener("mousedown", handleClickOutsideModal);
-  }, [selectedUser]);
 
   // Auth via onAuthStateChange — enkel systeem, geen bootstrapSession
   useEffect(() => {
@@ -1363,16 +1512,106 @@ export default function SaldoTrackerApp() {
     }),
     [saldoTransactionDirectionFilter, saldoTransactionSeasonFilter, saldoTransactionUserFilter, saldoTransactions],
   );
-  // De drie meest recente regels van de aangeklikte speler, binnen de categorie die nu open staat.
-  const selectedUserTransactions = useMemo(() => {
-    if (!selectedUser) return [];
-    const source = selectedUserCategory === "saldo"
-      ? saldoTransactions
-      : selectedUserCategory === "boete"
-        ? boeteTransactions
-        : vasteLastenTransactions.filter((transaction) => transaction.fixed_charge_id === activeFixedChargeId);
-    return source.filter((transaction) => transaction.user_id === selectedUser.id).slice(0, 3);
-  }, [activeFixedChargeId, boeteTransactions, saldoTransactions, selectedUser, selectedUserCategory, vasteLastenTransactions]);
+  const selectedUser = useMemo(
+    () => (selectedProfile ? users.find((user) => user.id === selectedProfile.userId) ?? null : null),
+    [selectedProfile, users],
+  );
+  // De cijfers van het spelersprofiel. Het saldoverloop rekenen we terug vanaf het huidige saldo:
+  // zo eindigt de lijn altijd op wat er nu staat, ook als iemand al saldo had van voor de eerste transactie.
+  const selectedUserProfile = useMemo(() => {
+    if (!selectedUser) return null;
+    const ownSaldoTransactions = saldoTransactions
+      .filter((transaction) => transaction.user_id === selectedUser.id)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    let topUpTotal = 0;
+    let topUpCount = 0;
+    let spentTotal = 0;
+    let spentCount = 0;
+    let balance = selectedUser.balance;
+    const history: Array<{ time: number; balance: number }> = [];
+    for (const transaction of ownSaldoTransactions) {
+      if (transaction.amount_change > 0) { topUpTotal += transaction.amount_change; topUpCount += 1; }
+      else if (transaction.amount_change < 0) { spentTotal -= transaction.amount_change; spentCount += 1; }
+      history.push({ time: new Date(transaction.created_at).getTime(), balance });
+      balance = Number((balance - transaction.amount_change).toFixed(2));
+    }
+    history.reverse();
+
+    // De verandering door de laatste opwaardering of uitgave, in procenten van het saldo daarvoor.
+    const latest = ownSaldoTransactions[0];
+    let lastChange: { amount: number; percent: number | null; label: string } | null = null;
+    if (latest) {
+      const balanceBefore = selectedUser.balance - latest.amount_change;
+      lastChange = {
+        amount: latest.amount_change,
+        percent: balanceBefore > 0 ? (Math.abs(latest.amount_change) / balanceBefore) * 100 : null,
+        label: `${latest.amount_change < 0 ? "Uitgave" : "Opwaardering"} van ${formatLongDate(latest.created_at)}`,
+      };
+    }
+
+    // Gelijke saldo's en gelijke aantallen goals delen een plek, net als bij de topscoorders.
+    // Admins staan niet in de kas, dus die krijgen geen plek.
+    const kasRank = isAdmin(selectedUser.role) ? null : sortedUsers.filter((user) => user.balance > selectedUser.balance).length + 1;
+    const seasonGoals = playerGoals.filter((row) => row.season === getCurrentSeason());
+    const goals = seasonGoals.find((row) => row.user_id === selectedUser.id)?.goals ?? 0;
+    const goalsRank = goals > 0 ? seasonGoals.filter((row) => row.goals > goals).length + 1 : null;
+
+    // Waar het geld heen gaat, aller tijden: uitgaven van het saldo, betaalde vaste lasten, afgevinkte potjesmaanden en boetes.
+    const ownTotal = (category: FinanceCategory) => transactions
+      .filter((transaction) => transaction.category === category && transaction.user_id === selectedUser.id)
+      .reduce((sum, transaction) => sum + transaction.amount_change, 0);
+    const monthlyAmountByPot = new Map(pots.map((pot) => [pot.id, pot.monthly_amount]));
+    const potTotal = potPayments
+      .filter((payment) => payment.user_id === selectedUser.id)
+      .reduce((sum, payment) => sum + (monthlyAmountByPot.get(payment.pot_id) ?? 0), 0);
+    const spending = [
+      { key: "saldo", label: "Saldo-uitgaven", amount: spentTotal, className: "bg-amber-400" },
+      { key: "vaste_lasten", label: "Vaste lasten", amount: ownTotal("vaste_lasten"), className: "bg-blue-500" },
+      { key: "potjes", label: "Potjes", amount: potTotal, className: "bg-violet-500" },
+      { key: "boete", label: "Boetes", amount: ownTotal("boete"), className: "bg-red-400" },
+    ]
+      .map((item) => ({ ...item, amount: Number(item.amount.toFixed(2)) }))
+      .filter((item) => item.amount > 0);
+
+    return {
+      history,
+      openingBalance: balance,
+      lastChange,
+      topUpTotal,
+      topUpCount,
+      spentTotal,
+      spentCount,
+      kasRank,
+      goals,
+      goalsRank,
+      spending,
+      spendingTotal: spending.reduce((sum, item) => sum + item.amount, 0),
+    };
+  }, [playerGoals, potPayments, pots, saldoTransactions, selectedUser, sortedUsers, transactions]);
+  // Het stuk saldoverloop dat bij de gekozen periode hoort, met een punt op het begin en een op nu.
+  const selectedUserChartPoints = useMemo(() => {
+    if (!selectedProfile || !selectedUser || !selectedUserProfile || selectedUserProfile.history.length === 0) return [];
+    const { history, openingBalance } = selectedUserProfile;
+    const months = saldoChartRangeOptions.find((option) => option.value === profileChartRange)?.months ?? null;
+    let start = history[0].time;
+    if (months !== null) {
+      const startDate = new Date(selectedProfile.openedAt);
+      startDate.setMonth(startDate.getMonth() - months);
+      start = startDate.getTime();
+    }
+    const before = history.filter((point) => point.time < start);
+    // Komt er via realtime een transactie bij terwijl het profiel open staat, dan schuift het eind mee.
+    const end = Math.max(selectedProfile.openedAt, history[history.length - 1].time);
+    // changedAt: wanneer dat saldo ontstond. Het begin van de periode draagt het saldo van de transactie daarvoor,
+    // of het beginsaldo als die er niet is; "nu" dat van de laatste transactie.
+    const lastBefore = before[before.length - 1];
+    return [
+      { time: start, balance: lastBefore ? lastBefore.balance : openingBalance, changedAt: lastBefore ? lastBefore.time : null },
+      ...history.filter((point) => point.time >= start).map((point) => ({ ...point, changedAt: point.time })),
+      { time: end, balance: selectedUser.balance, changedAt: history[history.length - 1].time },
+    ];
+  }, [profileChartRange, selectedProfile, selectedUser, selectedUserProfile]);
   // Saldo-aanpassingen van nieuw naar oud: transacties met dezelfde batch_id horen bij elkaar,
   // transacties van vóór de migratie tellen als een aanpassing van één speler.
   const saldoAdjustments = useMemo<SaldoAdjustment[]>(() => {
@@ -1591,15 +1830,6 @@ export default function SaldoTrackerApp() {
     }
     return totals;
   }, [statsTransactions]);
-  // Aller tijden, los van dat filter: de spelerspopup toont wat iemand in totaal heeft gestort.
-  const allTimePositivePerUser = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const t of saldoTransactions) {
-      if (t.amount_change <= 0) continue;
-      totals.set(t.user_id, (totals.get(t.user_id) ?? 0) + t.amount_change);
-    }
-    return totals;
-  }, [saldoTransactions]);
 
   const spenderChartData = useMemo(
     () => [...users]
@@ -1938,17 +2168,16 @@ export default function SaldoTrackerApp() {
     }
   };
 
-  const openUserPopup = (user: User, category: FinanceCategory) => {
-    setSelectedUserCategory(category);
-    setSelectedUser(user);
+  // Elk profiel opent met de grafiek op "Alles".
+  const openUserProfile = (userId: string) => {
+    setProfileChartRange("alles");
+    setSelectedProfile({ userId, openedAt: new Date().getTime() });
   };
 
-  // Vanuit een ranglijst: de statistiekpopup dicht, de spelerspopup open met de saldocijfers.
-  const openUserPopupFromStats = (userId: string) => {
-    const user = users.find((u) => u.id === userId);
-    if (!user) return;
+  // Vanuit een ranglijst: eerst de statistiekpopup dicht.
+  const openUserProfileFromStats = (userId: string) => {
     setActiveStatsKpi(null);
-    openUserPopup(user, "saldo");
+    openUserProfile(userId);
   };
 
   const startEditingUsername = () => {
@@ -2046,7 +2275,6 @@ export default function SaldoTrackerApp() {
     if (error) { console.error("Fout bij opslaan avatar:", error); return; }
     setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, avatar } : u));
     setCurrentUser((prev) => prev ? { ...prev, avatar } : prev);
-    setSelectedUser((prev) => prev?.id === currentUser.id ? { ...prev, avatar } : prev);
     updateAvatarCacheForUser(currentUser.id, avatar);
     if (previousAvatar && previousAvatar !== avatar) await removeAvatarObject(previousAvatar);
   };
@@ -2078,7 +2306,6 @@ export default function SaldoTrackerApp() {
     if (error) { console.error("Fout bij verwijderen avatar:", error); return; }
     setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, avatar: "" } : u));
     setCurrentUser((prev) => prev ? { ...prev, avatar: "" } : prev);
-    setSelectedUser((prev) => prev?.id === currentUser.id ? { ...prev, avatar: "" } : prev);
     updateAvatarCacheForUser(currentUser.id, "");
     await removeAvatarObject(previousAvatar);
   };
@@ -2932,7 +3159,7 @@ export default function SaldoTrackerApp() {
                         const hasPaid = activeFixedChargePerUser.has(user.id);
                         return (
                           <div key={user.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
-                            <button type="button" onClick={() => openUserPopup(user, activeFinanceCategory)} className="shrink-0 rounded-full">
+                            <button type="button" onClick={() => openUserProfile(user.id)} className="shrink-0 rounded-full">
                               <UserAvatar name={user.name} avatar={getAvatarForUser(user)} className="h-11 w-11 cursor-pointer transition hover:scale-105" />
                             </button>
                             <div className="min-w-0 flex-1">
@@ -3937,7 +4164,7 @@ export default function SaldoTrackerApp() {
                             <Fragment key={spender.userId}>
                               <button
                                 type="button"
-                                onClick={() => openUserPopupFromStats(spender.userId)}
+                                onClick={() => openUserProfileFromStats(spender.userId)}
                                 className="max-w-[7rem] truncate text-left text-xs font-medium text-slate-700 transition hover:text-slate-900"
                               >
                                 {spender.username}
@@ -4594,66 +4821,114 @@ export default function SaldoTrackerApp() {
         </div>
       ) : null}
 
-      {selectedUser ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center">
-          <motion.div
-            ref={userModalRef}
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2 }}
-            className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl"
-          >
-            <div className="flex items-start justify-between">
-              <span className="rounded-full bg-surface px-2.5 py-1 text-xs font-medium text-slate-600">{getRoleLabel(selectedUser.role)}</span>
-              <button
-                type="button"
-                onClick={() => setSelectedUser(null)}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-surface text-slate-700 transition hover:bg-slate-200"
-                aria-label="Sluiten"
-              >
-                <X className="h-4 w-4" />
+      {selectedUser && selectedUserProfile ? (
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-surface px-4 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-[env(safe-area-inset-top)]">
+          <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }} className="mx-auto max-w-2xl space-y-4">
+            <div className="flex h-12 items-center justify-end">
+              <button type="button" onClick={() => setSelectedProfile(null)} className="-mr-2 h-11 px-2 text-sm font-medium text-slate-900 transition hover:text-slate-600">
+                Sluiten
               </button>
             </div>
-            <div className="mt-1 text-center">
-              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-48 w-48 ring-4 ring-surface" fallbackClassName="text-4xl" />
-              <p className="mt-3 text-lg font-semibold text-slate-900">{selectedUser.name}</p>
+
+            <div className="-mt-2 text-center">
+              <UserAvatar name={selectedUser.name} avatar={getAvatarForUser(selectedUser)} className="mx-auto h-24 w-24 ring-4 ring-white" fallbackClassName="text-2xl" />
+              <p className="mt-3 text-xl font-semibold text-slate-900">{selectedUser.name}</p>
               <p className="text-sm text-slate-500">@{selectedUser.username}</p>
             </div>
-            <div className={`mt-5 grid gap-3 ${selectedUserCategory === "saldo" ? "grid-cols-2" : "grid-cols-1"}`}>
-              <div className="rounded-xl bg-surface p-4">
-                <p className="text-xs text-slate-500">{selectedUserCategory === "saldo" ? "Huidig saldo" : selectedUserCategory === "boete" ? "Boetes" : "Betaald voor deze post"}</p>
-                <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">
-                  {euro(selectedUser.balance)}
-                </p>
+
+            <div className="overflow-hidden rounded-xl bg-white pb-3 pt-5 shadow-sm">
+              <div className="px-5">
+                <p className="text-sm text-slate-500">Huidig saldo</p>
+                <p className="mt-1 text-4xl font-bold tracking-tight tabular-nums text-slate-900">{euro(selectedUser.balance)}</p>
+                {selectedUserProfile.lastChange ? (
+                  <>
+                    <p className={`mt-2 flex items-center gap-1.5 text-sm font-semibold tabular-nums ${selectedUserProfile.lastChange.amount < 0 ? "text-red-600" : "text-emerald-600"}`}>
+                      <svg viewBox="0 0 10 10" className={`h-2.5 w-2.5 fill-current ${selectedUserProfile.lastChange.amount < 0 ? "rotate-180" : ""}`} aria-hidden="true">
+                        <path d="M5 1.5 9.5 8.5H.5z" />
+                      </svg>
+                      <span className="sr-only">{selectedUserProfile.lastChange.amount < 0 ? "Omlaag" : "Omhoog"}</span>
+                      {selectedUserProfile.lastChange.percent !== null
+                        ? `${percentFormatter.format(selectedUserProfile.lastChange.percent)}% (${euro(Math.abs(selectedUserProfile.lastChange.amount))})`
+                        : euro(Math.abs(selectedUserProfile.lastChange.amount))}
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">{selectedUserProfile.lastChange.label}</p>
+                  </>
+                ) : null}
               </div>
-              {selectedUserCategory === "saldo" ? (
-                <div className="rounded-xl bg-surface p-4">
-                  <p className="text-xs text-slate-500">Totaal uitgegeven</p>
-                  <p className="mt-1 text-xl font-bold tracking-tight text-slate-900">{euro(allTimePositivePerUser.get(selectedUser.id) ?? 0)}</p>
-                </div>
-              ) : null}
+              {selectedUserChartPoints.length > 0 ? (
+                <>
+                  {/* Een andere periode is een nieuwe grafiek: de schuif begint dan weer rechts. */}
+                  <div className="mt-3 px-5">
+                    <SaldoLineChart key={profileChartRange} points={selectedUserChartPoints} />
+                  </div>
+                  <div className="mt-3 px-3">
+                    <SegmentedControl label="Periode" options={saldoChartRangeOptions} value={profileChartRange} onChange={setProfileChartRange} />
+                  </div>
+                </>
+              ) : (
+                <p className="mt-3 px-5 pb-2 text-sm text-slate-500">Nog geen saldotransacties.</p>
+              )}
             </div>
-            {selectedUserTransactions.length > 0 ? (
-              <div className="mt-4">
-                <p className="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Laatste transacties</p>
-                <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
-                  {selectedUserTransactions.map((transaction) => {
-                    const isBoete = transaction.category === "boete";
-                    return (
-                      <div key={transaction.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-900">{getTransactionKindLabel(transaction)}</p>
-                          <p className="text-xs text-slate-500">{formatDate(transaction.created_at)}</p>
-                        </div>
-                        <p className="shrink-0 text-sm font-semibold text-slate-900">
-                          {!isBoete && transaction.amount_change > 0 ? "+" : ""}{euro(transaction.amount_change)}
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <ProfileStatTile
+                icon={ArrowDownLeft}
+                tileClassName="bg-emerald-50 text-emerald-700"
+                value={euro(selectedUserProfile.topUpTotal)}
+                label={`Opgewaardeerd · ${selectedUserProfile.topUpCount}×`}
+              />
+              <ProfileStatTile
+                icon={ArrowUpRight}
+                tileClassName="bg-amber-50 text-amber-700"
+                value={euro(selectedUserProfile.spentTotal)}
+                label={`Uitgegeven · ${selectedUserProfile.spentCount}×`}
+              />
+              <ProfileStatTile
+                icon={Trophy}
+                tileClassName="bg-violet-50 text-violet-700"
+                value={selectedUserProfile.kasRank === null ? "-" : (
+                  <>#{selectedUserProfile.kasRank} <span className="text-sm font-medium text-slate-500">van {sortedUsers.length}</span></>
+                )}
+                label="Plek in de kas"
+              />
+              <ProfileStatTile
+                icon={Target}
+                tileClassName="bg-blue-50 text-blue-700"
+                value={selectedUserProfile.goals}
+                label={`Goals dit seizoen${selectedUserProfile.goalsRank === null ? "" : ` · #${selectedUserProfile.goalsRank}`}`}
+              />
+            </div>
+
+            <div className="rounded-xl bg-white p-4 shadow-sm">
+              <div className="flex items-baseline justify-between gap-3">
+                <h3 className="text-base font-semibold text-slate-900">Waar gaat het geld heen</h3>
+                <span className="text-xs text-slate-500">Aller tijden</span>
               </div>
-            ) : null}
+              {selectedUserProfile.spending.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">Nog geen uitgaven.</p>
+              ) : (
+                <>
+                  <div className="mt-4 flex h-3.5 gap-[3px]" role="img" aria-label="Verdeling van de uitgaven">
+                    {selectedUserProfile.spending.map((item) => (
+                      <div key={item.key} className={`h-full min-w-1 rounded-[4px] ${item.className}`} style={{ flex: `${item.amount} 1 0%` }} />
+                    ))}
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3">
+                    {selectedUserProfile.spending.map((item) => (
+                      <div key={item.key} className="flex items-start gap-2">
+                        <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-[3px] ${item.className}`} />
+                        <div className="min-w-0">
+                          <p className="text-xs text-slate-500">
+                            {item.label} · {Math.round((item.amount / selectedUserProfile.spendingTotal) * 100)}%
+                          </p>
+                          <p className="text-sm font-semibold tabular-nums text-slate-900">{euro(item.amount)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </motion.div>
         </div>
       ) : null}
@@ -4730,7 +5005,7 @@ export default function SaldoTrackerApp() {
                     <button
                       key={row.userId}
                       type="button"
-                      onClick={() => openUserPopupFromStats(row.userId)}
+                      onClick={() => openUserProfileFromStats(row.userId)}
                       className="flex w-full items-center gap-3 rounded-lg bg-surface px-3 py-2.5 text-left transition hover:bg-slate-200"
                     >
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-600">{index + 1}</span>
