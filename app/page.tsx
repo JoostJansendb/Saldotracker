@@ -1,6 +1,7 @@
 "use client";
 
 import React, { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { supabase } from "@/lib/supabase";
 import { roleSwitcherName, userRoles, type UserRole } from "@/lib/roles";
 import { applyThemePreference, getServerThemePreference, getThemePreference, setThemePreference, subscribeToThemePreference, type ThemePreference } from "@/lib/theme";
@@ -267,8 +268,142 @@ const statsKpiStyles: Record<StatsKpiKey, { icon: typeof Users; tileClassName: s
   largest: { icon: Trophy, tileClassName: "bg-amber-50 text-amber-700" },
 };
 
-// Het openklappen van een KPI-kaart: de kaart en alles eronder schuiven met dezelfde veer mee.
-const statsLayoutTransition = { type: "spring", stiffness: 380, damping: 36 } as const;
+// De volgorde van de vier KPI-kaarten als er één openstaat, per kaart die openstaat. Die neemt de hele rij waarin hij stond en
+// de kaart ernaast schuift een rij omlaag. De andere kaarten blijven zoveel mogelijk in hun eigen kolom, zodat ze elkaar
+// tijdens het schuiven niet kruisen.
+const statsKpiOrderWhenExpanded = [[0, 2, 1, 3], [1, 0, 3, 2], [0, 1, 2, 3], [0, 1, 3, 2]];
+
+// Alle bewegingen op de statistiekpagina lopen op deze ene curve, zodat kaarten, blokken en het scherm gelijk bewegen.
+const statsEase = "cubic-bezier(0.32, 0.72, 0, 1)";
+const statsLayoutDurationMs = 420;
+// De balkjes in Kas-kanonnen en het histogram: bij binnenkomst schuiven ze vanaf de rand naar hun eigen transform, en bij een
+// ander seizoen met een overgang. Schuiven in plaats van groeien kost geen layout per frame en de ronde kop blijft rond.
+const statsBarClassName = "transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]";
+// De ruimte die een opengeklapte kaart minstens houdt tot de bovenrand en de onderbalk.
+const statsCenterMargin = 12;
+const runningStatsAnimations = new Map<HTMLElement, () => void>();
+
+function getStatsBlocks() {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-stats-block]"));
+}
+
+// Waar een blok nu echt op het scherm staat: midden in een animatie telt ook het afgeknipte deel mee.
+function getVisibleBox(block: HTMLElement) {
+  const { left, top, width, height } = block.getBoundingClientRect();
+  const clip = getComputedStyle(block).clipPath;
+  if (!clip.startsWith("inset")) return { left, top, width, height };
+  // "inset(0px 12px 30px 0px round 14px)": boven, rechts, onder, links; gelijke waarden mag de browser weglaten.
+  const [clipTop, clipRight = clipTop, clipBottom = clipTop] = clip.slice(6).split(" round")[0].split(" ").map(parseFloat);
+  return { left, top, width: width - clipRight, height: height - clipBottom };
+}
+
+// De scrollpositie waarbij een blok midden tussen de bovenrand en de onderbalk staat.
+// Past het er niet tussen, dan komt het bovenaan te staan, zodat de kop van de kaart in beeld blijft.
+function getCenteredScrollTop(block: HTMLElement) {
+  const { top, height } = block.getBoundingClientRect();
+  const bottomBarTop = document.querySelector("[data-bottom-bar]")?.getBoundingClientRect().top ?? window.innerHeight;
+  const areaHeight = bottomBarTop - 2 * statsCenterMargin;
+  const targetTop = statsCenterMargin + Math.max(0, (areaHeight - height) / 2);
+  return window.scrollY + top - targetTop;
+}
+
+// Voert een layoutwijziging op de statistiekpagina uit en laat elk blok met data-stats-block vloeiend van zijn oude
+// naar zijn nieuwe plek en maat gaan. Alleen transform en clip-path bewegen: dat kost geen nieuwe layout per frame
+// en de browser kan het zonder tussenkomst van JavaScript afspelen, dus het loopt ook door als de telefoon het druk heeft.
+// Alles wordt in schermcoördinaten gemeten. Daardoor is scrollen gewoon onderdeel van dezelfde beweging: de pagina staat
+// meteen op zijn eindpositie en de blokken vertrekken vanaf waar ze op het scherm stonden. Zo loopt het altijd gelijk
+// en kan het niet botsen met een vinger die tegelijk scrollt. Een tik midden in een animatie begint waar het blok dan is.
+function animateStatsLayout(update: () => void, centerOn?: HTMLElement | null) {
+  const startBoxes = new Map(getStatsBlocks().map((block) => [block, getVisibleBox(block)]));
+  const openContents = Array.from(document.querySelectorAll<HTMLElement>("[data-stats-collapse]")).map((content) => ({
+    content,
+    parent: content.parentElement,
+    position: { position: "absolute", top: `${content.offsetTop}px`, left: `${content.offsetLeft}px`, width: `${content.offsetWidth}px`, pointerEvents: "none" },
+  }));
+  for (const stop of Array.from(runningStatsAnimations.values())) stop();
+
+  flushSync(update);
+
+  // Ook zonder centreren: is de pagina korter geworden, dan zet dit de scrollpositie meteen goed.
+  window.scrollTo(0, centerOn ? getCenteredScrollTop(centerOn) : window.scrollY);
+
+  const endBoxes = new Map(getStatsBlocks().map((block) => [block, block.getBoundingClientRect()]));
+
+  // Inhoud die React net heeft weggehaald gaat nog even terug, buiten de layout om, zodat hij kan vervagen terwijl het blok
+  // krimpt. Pas na het meten: anders telt hij mee voor de paginahoogte en springt de scrollpositie als hij verdwijnt.
+  // Het blok om data-stats-collapse heen moet daarvoor position: relative hebben.
+  for (const { content, parent, position } of openContents) {
+    if (content.isConnected || !parent) continue;
+    Object.assign(content.style, position);
+    parent.append(content);
+    content.animate({ opacity: [1, 0] }, { duration: 120, fill: "forwards" }).onfinish = () => content.remove();
+  }
+
+  const getShift = (block?: HTMLElement | null) => {
+    const start = block && startBoxes.get(block);
+    const end = block && endBoxes.get(block);
+    return start && end ? { x: start.left - end.left, y: start.top - end.top } : { x: 0, y: 0 };
+  };
+  const isOnScreen = (box: { top: number; height: number }) => box.top < window.innerHeight && box.top + box.height > 0;
+
+  for (const [block, end] of endBoxes) {
+    const start = startBoxes.get(block);
+    if (!start || (!isOnScreen(start) && !isOnScreen(end))) continue;
+
+    // Een blok binnen een bewegend blok (een maand in de maandenlijst) beweegt al mee: alleen het verschil komt erbij.
+    const shift = getShift(block);
+    const parentShift = getShift(block.parentElement?.closest<HTMLElement>("[data-stats-block]"));
+    const x = shift.x - parentShift.x;
+    const y = shift.y - parentShift.y;
+    const isMoved = Math.abs(x) > 0.5 || Math.abs(y) > 0.5;
+    const isResized = Math.abs(start.width - end.width) > 0.5 || Math.abs(start.height - end.height) > 0.5;
+    if (!isMoved && !isResized) continue;
+
+    const timing: KeyframeAnimationOptions = {
+      duration: statsLayoutDurationMs,
+      easing: statsEase,
+      fill: "forwards",
+    };
+    // Verplaatsen en afknippen zijn twee aparte animaties: samen in één kan de browser ook de verplaatsing niet los van JavaScript afspelen.
+    const animations: Animation[] = [];
+    if (isMoved) animations.push(block.animate({ transform: [`translate(${x}px, ${y}px)`, "translate(0, 0)"] }, timing));
+    let releaseHeldSize = () => {};
+    if (isResized) {
+      const fullWidth = Math.max(start.width, end.width);
+      const fullHeight = Math.max(start.height, end.height);
+      const { borderTopLeftRadius, marginBottom } = getComputedStyle(block);
+      const clipTo = (box: { width: number; height: number }) =>
+        `inset(0 ${fullWidth - box.width}px ${fullHeight - box.height}px 0 round ${borderTopLeftRadius})`;
+      animations.push(block.animate({ clipPath: [clipTo(start), clipTo(end)] }, timing));
+
+      // Kleiner worden: het blok blijft zo lang op zijn oude maat getekend om af te knippen,
+      // terwijl de negatieve marges de ruimte in de layout al op de eindmaat houden.
+      if (fullWidth > end.width || fullHeight > end.height) {
+        const content = block.firstElementChild as HTMLElement | null;
+        block.style.height = `${fullHeight}px`;
+        block.style.marginBottom = `${parseFloat(marginBottom) + end.height - fullHeight}px`;
+        if (fullWidth > end.width) {
+          block.style.width = `${fullWidth}px`;
+          block.style.marginRight = `${end.width - fullWidth}px`;
+          // De inhoud staat alvast op de eindbreedte, zodat het pijltje van een KPI-kaart niet achteraf verspringt.
+          if (content) content.style.width = `${end.width}px`;
+        }
+        releaseHeldSize = () => {
+          block.style.height = block.style.marginBottom = block.style.width = block.style.marginRight = "";
+          if (content) content.style.width = "";
+        };
+      }
+    }
+
+    const stop = () => {
+      for (const animation of animations) animation.cancel();
+      releaseHeldSize();
+      runningStatsAnimations.delete(block);
+    };
+    animations[0].onfinish = stop;
+    runningStatsAnimations.set(block, stop);
+  }
+}
 
 const transactionDirectionOptions: Array<{ value: TransactionDirection; label: string }> = [
   { value: "alle", label: "Alle" },
@@ -1915,15 +2050,7 @@ export default function SaldoTrackerApp() {
     { key: "average", label: "Gemiddelde opwaardering", value: euro(statistics.averageTopUp) },
     { key: "largest", label: "Grootste opwaardering", value: euro(statistics.largestTopUp) },
   ];
-  // Een opengeklapte KPI-kaart neemt de hele rij waarin hij stond; de kaart die ernaast stond schuift een rij omlaag.
-  const expandedKpiIndex = statisticsKpis.findIndex((kpi) => kpi.key === activeStatsKpi);
-  const orderedStatisticsKpis = expandedKpiIndex === -1
-    ? statisticsKpis
-    : (() => {
-      const others = statisticsKpis.filter((_, index) => index !== expandedKpiIndex);
-      const rowStart = expandedKpiIndex - (expandedKpiIndex % 2);
-      return [...others.slice(0, rowStart), statisticsKpis[expandedKpiIndex], ...others.slice(rowStart)];
-    })();
+  const statsKpiOrder = statsKpiOrderWhenExpanded[statisticsKpis.findIndex((kpi) => kpi.key === activeStatsKpi)] ?? [0, 1, 2, 3];
 
   // Achter elke KPI-tegel zit een uitklapbare ranglijst (of bij het gemiddelde een histogram) van de opwaarderingen.
   const statisticsDetails = useMemo(() => {
@@ -2158,7 +2285,7 @@ export default function SaldoTrackerApp() {
 
   const isDevUser = isDev(currentUser?.role ?? "user");
   const devUsageSection = isDevUser ? (
-    <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.1 }} className="space-y-4">
+    <div data-stats-block className="space-y-4 animate-stats-rise">
       <section className="space-y-2">
         <div className="flex items-center justify-between px-1">
           <h2 className="text-sm font-semibold text-slate-900">Gebruikersstatistieken</h2>
@@ -2220,7 +2347,7 @@ export default function SaldoTrackerApp() {
           </div>
         )}
       </div>
-    </motion.div>
+    </div>
   ) : null;
 
   const login = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -3140,7 +3267,7 @@ export default function SaldoTrackerApp() {
           </motion.div>
         ) : (
           <>
-            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+            <motion.div data-stats-block initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
               <button
                 type="button"
                 onClick={() => setIsProfilePageOpen(true)}
@@ -4114,8 +4241,8 @@ export default function SaldoTrackerApp() {
               </motion.div>
             ) : activeMainTab === "statistieken" ? (
               <>
-                <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }} className="space-y-4">
-                  <div className="rounded-xl bg-white p-3 shadow-sm">
+                <div className="space-y-4 animate-stats-rise">
+                  <div data-stats-block className="rounded-xl bg-white p-3 shadow-sm">
                     <Label htmlFor="stats-season-filter" className="text-xs uppercase tracking-wide text-slate-500">Seizoen</Label>
                     <select
                       id="stats-season-filter"
@@ -4130,11 +4257,11 @@ export default function SaldoTrackerApp() {
                     </select>
                   </div>
 
-                  <div className="rounded-xl bg-white shadow-sm">
+                  <div data-stats-block className="relative rounded-xl bg-white shadow-sm">
                     <div className="flex items-center">
                       <button
                         type="button"
-                        onClick={() => setTopScorersView((prev) => (prev === "dicht" ? "open" : "dicht"))}
+                        onClick={() => animateStatsLayout(() => setTopScorersView((prev) => (prev === "dicht" ? "open" : "dicht")))}
                         aria-expanded={topScorersView !== "dicht"}
                         className="flex flex-1 items-center gap-2.5 px-3 py-2.5 text-left"
                       >
@@ -4147,7 +4274,7 @@ export default function SaldoTrackerApp() {
                       {canEditTopScorers ? (
                         <button
                           type="button"
-                          onClick={() => { setTopScorersMessage(""); setTopScorersView((prev) => (prev === "bewerken" ? "open" : "bewerken")); }}
+                          onClick={() => animateStatsLayout(() => { setTopScorersMessage(""); setTopScorersView((prev) => (prev === "bewerken" ? "open" : "bewerken")); })}
                           className={`mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${isEditingTopScorers ? "bg-slate-900 text-white" : "bg-surface text-slate-600 hover:bg-slate-200"}`}
                           aria-label={isEditingTopScorers ? "Klaar met aanpassen" : "Topscoorders aanpassen"}
                         >
@@ -4156,7 +4283,7 @@ export default function SaldoTrackerApp() {
                       ) : null}
                     </div>
                     {isEditingTopScorers ? (
-                      <div className="border-t border-slate-100 px-3 pb-3 pt-1">
+                      <div data-stats-collapse className="border-t border-slate-100 px-3 pb-3 pt-1 animate-stats-fade">
                         <div className="divide-y divide-slate-100">
                           {topScorerEditRows.map((row) => (
                             <div key={row.userId} className="flex items-center gap-3 py-1.5">
@@ -4185,7 +4312,7 @@ export default function SaldoTrackerApp() {
                         {topScorersMessage ? <p className="mt-2 text-xs text-slate-500">{topScorersMessage}</p> : null}
                       </div>
                     ) : topScorersView !== "dicht" ? (
-                      <div className="border-t border-slate-100 px-3">
+                      <div data-stats-collapse className="border-t border-slate-100 px-3 animate-stats-fade">
                         {topScorers.length === 0 ? (
                           <p className="py-2.5 text-sm text-slate-500">Nog geen doelpunten.</p>
                         ) : (
@@ -4206,33 +4333,32 @@ export default function SaldoTrackerApp() {
                   </div>
 
                   {/* Een tik op een kaart klapt hem open over de volle breedte, met eronder de top 5 (bij het gemiddelde
-                      het histogram); nog een tik klapt hem dicht. layout laat de kaarten naar hun nieuwe plek schuiven,
-                      layout="position" op de inhoud voorkomt dat de tekst meerekt terwijl de kaart van maat verandert.
-                      De hoekafronding staat in style, zodat framer-motion hem tijdens het schuiven rond houdt. */}
+                      het histogram), en het scherm beweegt mee tot hij gecentreerd staat; nog een tik klapt hem dicht.
+                      Hoe dat beweegt staat bij animateStatsLayout. */}
                   <div className="grid grid-cols-2 gap-3">
-                    {orderedStatisticsKpis.map((kpi) => {
+                    {statisticsKpis.map((kpi, kpiIndex) => {
                       const { icon: KpiIcon, tileClassName } = statsKpiStyles[kpi.key];
                       const isExpanded = kpi.key === activeStatsKpi;
                       return (
-                        <motion.div
+                        <div
                           key={kpi.key}
-                          layout
-                          transition={statsLayoutTransition}
-                          style={{ borderRadius: 14 }}
-                          className={`overflow-hidden bg-white shadow-sm ${isExpanded ? "col-span-2" : ""}`}
+                          data-stats-block
+                          style={{ order: statsKpiOrder.indexOf(kpiIndex) }}
+                          className={`relative overflow-hidden rounded-xl bg-white shadow-sm ${isExpanded ? "col-span-2" : ""}`}
                         >
-                          <motion.button
-                            layout="position"
-                            transition={statsLayoutTransition}
+                          <button
                             type="button"
-                            onClick={() => setActiveStatsKpi(isExpanded ? null : kpi.key)}
+                            onClick={(event) => animateStatsLayout(
+                              () => setActiveStatsKpi(isExpanded ? null : kpi.key),
+                              isExpanded ? null : event.currentTarget.parentElement,
+                            )}
                             aria-expanded={isExpanded}
                             className="relative block w-full p-4 text-left transition-colors hover:bg-slate-50"
                           >
                             {isExpanded ? (
-                              <span className="absolute right-4 top-3.5 text-sm font-medium text-slate-900">Sluiten</span>
+                              <span key="sluiten" className="absolute right-4 top-3.5 text-sm font-medium text-slate-900 animate-stats-fade">Sluiten</span>
                             ) : (
-                              <span className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500">
+                              <span key="openen" className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-surface text-slate-500 animate-stats-fade">
                                 <ArrowUpRight className="h-3.5 w-3.5" />
                               </span>
                             )}
@@ -4241,34 +4367,30 @@ export default function SaldoTrackerApp() {
                             </span>
                             <p className="mt-2.5 text-2xl font-bold tracking-tight text-slate-900">{kpi.value}</p>
                             <p className="mt-1 text-xs text-slate-500">{kpi.label}</p>
-                          </motion.button>
+                          </button>
                           {isExpanded ? (
-                            <motion.div
-                              layout="position"
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              transition={{ opacity: { duration: 0.2, delay: 0.12 }, layout: statsLayoutTransition }}
-                              className="border-t border-slate-100 px-4 pb-2 pt-3"
-                            >
+                            <div data-stats-collapse className="border-t border-slate-100 px-4 pb-2 pt-3 animate-stats-fade">
                               <p className="text-xs text-slate-500">{statsKpiDescriptions[kpi.key]}</p>
                               {kpi.key === "average" ? (
                                 statisticsDetails.histogram.length === 0 ? (
                                   <p className="py-2.5 text-sm text-slate-500">Nog geen opwaarderingen beschikbaar.</p>
                                 ) : (
                                   <div className="pb-2 pt-4">
-                                    <div className="flex h-44 items-end gap-1.5">
+                                    <div className="flex h-44 gap-1.5">
                                       {statisticsDetails.histogram.map((bucket, index) => {
                                         const isAverageBucket = index === statisticsDetails.averageBucketIndex;
-                                        const heightPercent = (bucket.count / statisticsDetails.histogramMax) * 100;
+                                        const heightPercent = Math.max((bucket.count / statisticsDetails.histogramMax) * 100, 3);
                                         return (
-                                          <div key={bucket.from} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
-                                            <span className={`text-[11px] font-semibold tabular-nums ${isAverageBucket ? "text-slate-900" : "text-slate-500"}`}>{bucket.count}</span>
-                                            <motion.div
-                                              initial={{ height: 0 }}
-                                              animate={{ height: `${Math.max(heightPercent, 3)}%` }}
-                                              transition={{ duration: 0.45, delay: index * 0.04 }}
-                                              className={`w-full rounded-md ${isAverageBucket ? "bg-violet-500" : "bg-surface"}`}
-                                            />
+                                          // Elke kolom schuift als geheel (getal plus balk) omhoog uit de afgeknipte onderrand: de balk loopt
+                                          // daaronder door, zodat hij niet uitrekt. De factor laat bovenin ruimte voor het getal van de hoogste kolom.
+                                          <div key={bucket.from} className="h-full min-w-0 flex-1 overflow-hidden rounded-b-md">
+                                            <div
+                                              style={{ transform: `translateY(${(100 - heightPercent) * 0.88}%)`, animationDelay: `${index * 20}ms` }}
+                                              className={`flex h-full flex-col items-center gap-1 animate-stats-bar-y ${statsBarClassName}`}
+                                            >
+                                              <span className={`text-[11px] font-semibold tabular-nums ${isAverageBucket ? "text-slate-900" : "text-slate-500"}`}>{bucket.count}</span>
+                                              <div className={`w-full flex-1 rounded-t-md ${isAverageBucket ? "bg-violet-500" : "bg-surface"}`} />
+                                            </div>
                                           </div>
                                         );
                                       })}
@@ -4304,14 +4426,14 @@ export default function SaldoTrackerApp() {
                                   onSelect={openUserProfile}
                                 />
                               )}
-                            </motion.div>
+                            </div>
                           ) : null}
-                        </motion.div>
+                        </div>
                       );
                     })}
                   </div>
 
-                  <motion.div layout="position" transition={statsLayoutTransition} className="rounded-xl bg-white p-4 shadow-sm">
+                  <div data-stats-block className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5">
                         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
@@ -4337,11 +4459,9 @@ export default function SaldoTrackerApp() {
                                 {spender.username}
                               </button>
                               <div className="h-2.5 min-w-0 overflow-hidden rounded-full bg-surface">
-                                <motion.div
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${widthPercent}%` }}
-                                  transition={{ duration: 0.5, delay: index * 0.03 }}
-                                  className="h-full rounded-full bg-slate-700"
+                                <div
+                                  style={{ transform: `translateX(${widthPercent - 100}%)`, animationDelay: `${index * 20}ms` }}
+                                  className={`h-full w-full rounded-full bg-slate-700 animate-stats-bar-x ${statsBarClassName}`}
                                 />
                               </div>
                               <span className="text-right text-xs font-semibold tabular-nums text-slate-900">{euro(spender.total)}</span>
@@ -4350,9 +4470,9 @@ export default function SaldoTrackerApp() {
                         })}
                       </div>
                     )}
-                  </motion.div>
+                  </div>
 
-                  <motion.div layout="position" transition={statsLayoutTransition} className="rounded-xl bg-white p-4 shadow-sm">
+                  <div data-stats-block className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="flex items-center gap-2.5">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
                         <ArrowDownLeft className="h-4 w-4" />
@@ -4366,10 +4486,10 @@ export default function SaldoTrackerApp() {
                         {statistics.monthlyTotals.map((item) => {
                           const isExpanded = expandedStatMonths.includes(item.key);
                           return (
-                            <div key={item.key} className="rounded-lg bg-surface">
+                            <div key={item.key} data-stats-block className="relative rounded-lg bg-surface">
                               <button
                                 type="button"
-                                onClick={() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
+                                onClick={() => animateStatsLayout(() => setExpandedStatMonths((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key]))}
                                 className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
                               >
                                 <span className="flex-1 text-sm text-slate-700">{item.label}</span>
@@ -4377,7 +4497,7 @@ export default function SaldoTrackerApp() {
                                 <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
                               </button>
                               {isExpanded ? (
-                                <div className="space-y-1.5 border-t border-slate-200 px-3 pb-2.5 pt-2">
+                                <div data-stats-collapse className="space-y-1.5 border-t border-slate-200 px-3 pb-2.5 pt-2 animate-stats-fade">
                                   {item.perUserTotals.map((person) => (
                                     <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
                                       <span className="text-slate-600">{person.name}</span>
@@ -4391,9 +4511,9 @@ export default function SaldoTrackerApp() {
                         })}
                       </div>
                     )}
-                  </motion.div>
+                  </div>
 
-                  <motion.div layout="position" transition={statsLayoutTransition} className="rounded-xl bg-white p-4 shadow-sm">
+                  <div data-stats-block className="rounded-xl bg-white p-4 shadow-sm">
                     <div className="flex items-center gap-2.5">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
                         <ArrowUpRight className="h-4 w-4" />
@@ -4407,10 +4527,10 @@ export default function SaldoTrackerApp() {
                         {statistics.dailyExpenses.map((item) => {
                           const isExpanded = expandedStatDates.includes(item.key);
                           return (
-                            <div key={item.key} className="rounded-lg bg-surface">
+                            <div key={item.key} data-stats-block className="relative rounded-lg bg-surface">
                               <button
                                 type="button"
-                                onClick={() => setExpandedStatDates((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key])}
+                                onClick={() => animateStatsLayout(() => setExpandedStatDates((prev) => prev.includes(item.key) ? prev.filter((k) => k !== item.key) : [...prev, item.key]))}
                                 className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
                               >
                                 <span className="flex-1 text-sm text-slate-700">{item.label}</span>
@@ -4418,7 +4538,7 @@ export default function SaldoTrackerApp() {
                                 <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
                               </button>
                               {isExpanded ? (
-                                <div className="space-y-1.5 border-t border-slate-200 px-3 pb-2.5 pt-2">
+                                <div data-stats-collapse className="space-y-1.5 border-t border-slate-200 px-3 pb-2.5 pt-2 animate-stats-fade">
                                   {item.perUserTotals.map((person) => (
                                     <div key={`${item.key}-${person.userId}`} className="flex items-center justify-between text-sm">
                                       <span className="text-slate-600">{person.name}</span>
@@ -4432,8 +4552,8 @@ export default function SaldoTrackerApp() {
                         })}
                       </div>
                     )}
-                  </motion.div>
-                </motion.div>
+                  </div>
+                </div>
                 {devUsageSection}
               </>
             ) : null}
@@ -5163,7 +5283,7 @@ export default function SaldoTrackerApp() {
       </AnimatePresence>
 
       {isProfilePageOpen ? null : (
-      <div className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+      <div data-bottom-bar className="fixed bottom-0 left-0 right-0 z-40 border-t bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
         <div className="mx-auto grid w-full max-w-sm grid-cols-4 px-6 py-3">
           <button onClick={() => switchMainTab("saldo")} className="relative flex w-full flex-col items-center justify-center">
             <Wallet className={`transition ${activeMainTab === "saldo" ? "h-6 w-6 text-slate-900" : "h-5 w-5 text-slate-400"}`} />

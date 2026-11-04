@@ -49,6 +49,33 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * De animaties van de statistiekpagina: alleen opacity en transform, zodat de browser ze los van de rest van de pagina
+ * kan afspelen. Daarom niet animate-in van tw-animate-css: die animeert ook filter, en dan kan dat niet.
+ * De balkjes hebben geen eindpunt: ze lopen naar hun eigen transform.
+ */
+@theme {
+  --animate-stats-fade: stats-fade 200ms ease-out;
+  --animate-stats-rise: stats-rise 300ms ease-out;
+  --animate-stats-bar-x: stats-bar-x 500ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  --animate-stats-bar-y: stats-bar-y 500ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+
+  @keyframes stats-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes stats-rise {
+    from { opacity: 0; transform: translateY(1rem); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes stats-bar-x {
+    from { transform: translateX(-100%); }
+  }
+  @keyframes stats-bar-y {
+    from { transform: translateY(100%); }
+  }
+}
+
 :root {
   color-scheme: light;
   /* De lichtgrijze ondergrond van de app, ook achter de kaarten in de kaarten. */
